@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "omni-responder-dgx-spark"
+version = "0.1.0"
+description = "Autonomous, privacy-first emergency dispatch system on NVIDIA DGX Spark"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    { name = "Vishal Shah", email = "vishalshah3584@hotmail.com" }
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "pydantic>=2.0.0",
+    "rich>=13.0.0",
+    "openai>=1.0.0",
+    "requests>=2.31.0",
+    "python-dotenv>=1.0.0"
+]

@@ -1,0 +1,35 @@
+[
+  {
+    "un_number": "UN1017",
+    "chemical_name": "Chlorine Gas / Liquefied Chlorine",
+    "hazard_class": "2.3 (Poison Gas)",
+    "visual_indicators": ["greenish-yellow gas", "pungent odor", "cloud hovering near ground"],
+    "initial_isolation_distance_meters": 100,
+    "day_protection_distance_km": 0.8,
+    "night_protection_distance_km": 2.3,
+    "fire_response": "Do not direct water directly into leak container. Use water spray to knock down vapors.",
+    "ppe_required": "Level A (SCBA with fully encapsulating chemical protective suit)"
+  },
+  {
+    "un_number": "UN1203",
+    "chemical_name": "Gasoline / Motor Fuel",
+    "hazard_class": "3 (Flammable Liquid)",
+    "visual_indicators": ["clear to amber liquid", "rainbow sheen on water", "hydrocarbon odor", "rapid flame spread"],
+    "initial_isolation_distance_meters": 50,
+    "day_protection_distance_km": 0.3,
+    "night_protection_distance_km": 0.5,
+    "fire_response": "Use dry chemical, CO2, or regular foam. Water spray may be ineffective.",
+    "ppe_required": "Standard firefighter turnout gear with SCBA"
+  },
+  {
+    "un_number": "UN1830",
+    "chemical_name": "Sulfuric Acid (Greenish commercial blend)",
+    "hazard_class": "8 (Corrosive Substance)",
+    "visual_indicators": ["dense oily liquid", "green/brown tint in commercial carrier", "acrid fumes"],
+    "initial_isolation_distance_meters": 50,
+    "day_protection_distance_km": 0.5,
+    "night_protection_distance_km": 1.0,
+    "fire_response": "Dry chemical or CO2. Avoid water contact directly with pooled acid.",
+    "ppe_required": "Level B chemical protective clothing with positive pressure SCBA"
+  }
+]
