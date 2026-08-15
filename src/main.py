@@ -171,7 +171,7 @@ def run_live_stream_simulation(video_path: str, location: Optional[str], speed: 
 
 def main():
     parser = argparse.ArgumentParser(description="Omni-Responder: Autonomous Emergency Dispatch on NVIDIA DGX Spark")
-    parser.add_argument("--video", type=str, default="data/video_clips/crash_scenario_1.mp4", help="Path to input video file")
+    parser.add_argument("--video", type=str, default="data/video_clips/scenario_1.mp4", help="Path to input video file")
     parser.add_argument("--location", type=str, default=None, help="Optional registered camera location override")
     parser.add_argument("--stream", action="store_true", help="Run temporal live stream monitoring simulation")
     parser.add_argument("--speed", type=float, default=1.0, help="Stream playback speed multiplier (default: 1.0)")

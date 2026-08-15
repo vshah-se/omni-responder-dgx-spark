@@ -29,7 +29,7 @@ def test_vlm_json_parser():
 def test_pixel_motion_differencing():
     pipeline = VSSPerceptionPipeline()
     # Test on any available test video
-    test_video = "data/video_clips/crash_scenario_1.mp4"
+    test_video = "data/video_clips/scenario_1.mp4"
     if os.path.exists(test_video):
         has_anomaly, anomaly_t, desc = pipeline.scan_motion_and_anomaly_points(test_video)
         assert isinstance(has_anomaly, bool)

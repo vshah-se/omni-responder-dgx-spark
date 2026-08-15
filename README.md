@@ -70,7 +70,7 @@ omni-responder-dgx-spark/
 ├── data/
 │   ├── hazmat_db.json       # Local Emergency Response Guidebook dataset
 │   ├── scenarios.json       # Crisis test cases & GPS coordinates
-│   └── video_clips/         # Demo video feeds (crash_scenario_1.mp4, crash_3.mov)
+│   └── video_clips/         # Demo video feeds (scenario_1.mp4, crash_3.mov)
 ├── tests/                   # Automated unit & integration test suites
 │   ├── test_pipeline.py
 │   └── test_vss_pipeline.py
@@ -105,7 +105,7 @@ Streams the live temporal camera feed, runs Cosmos Reasoner AI analysis, and dis
 
 ```bash
 # Chemical Tanker Collision (Scenario 1):
-python3 -m src.main --video data/video_clips/crash_scenario_1.mp4 --stream
+python3 -m src.main --video data/video_clips/scenario_1.mp4 --stream
 
 # Real Multi-Vehicle Incident (Scenario 3):
 python3 -m src.main --video data/video_clips/crash_3.mov --stream
@@ -119,7 +119,7 @@ python3 -m src.main --video data/video_clips/crash_3.mov --location "5th Ave & M
 
 #### 🔌 C. Output Raw JSON (For Frontend / API Integration)
 ```bash
-python3 -m src.main --video data/video_clips/crash_scenario_1.mp4 --json
+python3 -m src.main --video data/video_clips/scenario_1.mp4 --json
 ```
 
 ---
