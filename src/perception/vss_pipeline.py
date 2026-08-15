@@ -143,7 +143,8 @@ Output ONLY a STRICT JSON object with these exact keys:
         """Computes true mathematical pixel delta across video timeline to locate exact anomaly moment."""
         duration = self.get_video_duration(video_path)
         
-        num_samples = 8
+        # Sample every 1 second to precisely isolate the moment of impact
+        num_samples = max(8, int(duration / 1.0))
         sample_times = [round((i + 0.5) * (duration / num_samples), 2) for i in range(num_samples)]
         
         thumbnails: List[Tuple[float, bytes]] = []
