@@ -16,7 +16,7 @@ class VisualContextSummary:
     location: str
     camera_id: str = "CAM-DGX-SPARK-01"
     crisis_type: str = "Physical Emergency Incident"
-    severity: str = "LOW"  # "CRITICAL", "HIGH", "MEDIUM", "LOW"
+    severity: str = "HIGH"  # "CRITICAL", "HIGH", "MEDIUM", "LOW"
     vehicles_involved: int = 0
     hazard_indicators: List[str] = field(default_factory=list)
     raw_summary: str = ""
@@ -31,40 +31,42 @@ class StreamFrameEvent:
     """Temporal frame event during live continuous video monitoring."""
     timestamp: str
     elapsed_seconds: float
-    status: str
+    status: str  # "NORMAL_MONITORING", "ANOMALY_DETECTED", "CRISIS_IMPACT"
     severity: str
     scene_description: str
     visual_summary: Optional[VisualContextSummary] = None
 
 class VSSPerceptionPipeline:
-    """Interfaces directly with NVIDIA Cosmos Reasoner 2 VLM running on Port 30082."""
+    """Two-Stage Edge Vision Pipeline: Frame Tagging ➔ Multi-Sequence Deep Diagnosis on Cosmos NIM."""
 
-    SYSTEM_PROMPT = """You are an autonomous Emergency Incident Vision Agent running on NVIDIA DGX Spark.
-You are given a chronological sequence of video frames sampled across the ENTIRE duration of a camera feed (from start to finish).
-Carefully inspect the full temporal progression across all frames:
-1. Did a traffic collision, vehicle impact, chemical spill, fire, or hazard occur at ANY point in the sequence?
-2. If an incident occurred, identify all vehicles involved, damage, smoke/flames/fluids, and severity.
-3. If the entire sequence shows only normal driving with no accidents, set severity to "LOW", crisis_type to "Normal Traffic Flow", and hazard_indicators to [].
+    STAGE1_TAG_PROMPT = """You are an edge camera frame monitor. Analyze this single frame.
+Output a STRICT JSON object:
+{
+  "has_anomaly": boolean (true if accident, crash, fire, smoke, spilled fluid, or abnormal blockage; false if normal driving/clear),
+  "description": "short 1 sentence description of what is visible in this frame",
+  "anomaly_type": "None" | "Collision" | "Fire" | "Congestion" | "Hazard"
+}"""
 
-Output a STRICT valid JSON object with these exact keys:
+    STAGE2_DEEP_PROMPT = """You are an Emergency Incident Vision Reasoner on NVIDIA DGX Spark.
+Analyze this chronological multi-frame sequence showing an emergency incident from beginning to outcome.
+Output a STRICT JSON object:
 {
   "location": "string",
   "camera_id": "string",
-  "crisis_type": "string (e.g. Collision / Chemical Spill / Normal Flow)",
+  "crisis_type": "string (e.g. Multi-vehicle collision / Chemical tanker breach / Structural fire)",
   "severity": "CRITICAL" | "HIGH" | "MEDIUM" | "LOW",
   "vehicles_involved": integer,
-  "hazard_indicators": ["list of visible hazards like smoke, fire, fluid leak, wreckage, or empty if none"],
-  "raw_summary": "detailed 2-3 sentence visual summary describing the progression and outcome across the frames",
+  "hazard_indicators": ["list of visible hazards like smoke, fire, leaked liquids, wreckage, damage"],
+  "raw_summary": "detailed 2-3 sentence visual summary describing the physical progression and hazards",
   "confidence": float (0.0 to 1.0)
-}
-Output ONLY the JSON object without commentary."""
+}"""
 
     def __init__(self, endpoint_url: Optional[str] = None, model_name: Optional[str] = None):
         self.endpoint_url = endpoint_url or os.getenv("COSMOS_VLM_URL", "http://localhost:30082/v1")
         self.model_name = model_name
 
     def _get_active_model_name(self) -> str:
-        """Dynamically queries the NIM container to get its exact registered model name."""
+        """Queries the NIM container for its registered model name."""
         if self.model_name:
             return self.model_name
         try:
@@ -80,7 +82,7 @@ Output ONLY the JSON object without commentary."""
         return "nvidia/cosmos-reason2-8b"
 
     def get_video_duration(self, video_path: str) -> float:
-        """Dynamically retrieves the exact duration of any video file in seconds."""
+        """Retrieves exact video duration."""
         try:
             cmd = [
                 "ffprobe", "-v", "error",
@@ -89,91 +91,85 @@ Output ONLY the JSON object without commentary."""
                 video_path
             ]
             out = subprocess.check_output(cmd, timeout=5).decode().strip()
-            return max(1.0, float(out))
+            return max(2.0, float(out))
         except Exception:
-            return 15.0
+            return 12.0
 
-    def extract_full_video_keyframes(self, video_path: str, num_frames: int = 8) -> List[Tuple[float, str]]:
-        """Evenly samples keyframes across the ENTIRE duration of the video file with timestamps."""
-        duration = self.get_video_duration(video_path)
-        frames_with_ts = []
-
-        # Calculate evenly spaced sample timestamps across duration (e.g. at 10%, 25%, 40%, 60%, 75%, 90%)
-        sample_times = [round((i + 0.5) * (duration / num_frames), 2) for i in range(num_frames)]
-
-        for t in sample_times:
-            try:
-                cmd = [
-                    "ffmpeg", "-y", "-ss", str(t),
-                    "-i", video_path,
-                    "-vframes", "1",
-                    "-vf", "scale=640:-1",
-                    "-f", "image2pipe",
-                    "-vcodec", "mjpeg",
-                    "-"
-                ]
-                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-                out, _ = proc.communicate(timeout=8)
-                if len(out) > 1000:
-                    b64 = base64.b64encode(out).decode("utf-8")
-                    frames_with_ts.append((t, b64))
-            except Exception:
-                continue
-
-        return frames_with_ts
-
-    def process_video_file(self, video_path: str, location_hint: str = "5th Ave & Market St Intersection") -> VisualContextSummary:
-        """Sends full temporal keyframe sequence to the live Cosmos Reasoner VLM on Port 30082."""
-        if not os.path.exists(video_path):
-            raise FileNotFoundError(f"Video file not found at: {video_path}")
-
+    def extract_single_frame(self, video_path: str, timestamp_sec: float) -> Optional[str]:
+        """Extracts a single JPEG frame at a specific timestamp as base64."""
         try:
-            return self._query_live_cosmos_vlm(video_path, location_hint)
-        except urllib.error.HTTPError as e:
-            error_body = e.read().decode("utf-8", errors="ignore")
-            print(f"\033[1;31m[ERROR] Cosmos VLM returned HTTP {e.code}: {error_body}\033[0m")
-            return self._extract_scenario_heuristic(video_path, location_hint)
-        except Exception as e:
-            print(f"\033[1;33m[WARN] Cosmos VLM connection error: {e}. Using fallback.\033[0m")
-            return self._extract_scenario_heuristic(video_path, location_hint)
+            cmd = [
+                "ffmpeg", "-y", "-ss", str(timestamp_sec),
+                "-i", video_path,
+                "-vframes", "1",
+                "-vf", "scale=640:-1",
+                "-f", "image2pipe",
+                "-vcodec", "mjpeg",
+                "-"
+            ]
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            out, _ = proc.communicate(timeout=6)
+            if len(out) > 1000:
+                return base64.b64encode(out).decode("utf-8")
+        except Exception:
+            pass
+        return None
 
-    def _query_live_cosmos_vlm(self, video_path: str, location_hint: str) -> VisualContextSummary:
-        """Calls OpenAI-compatible /v1/chat/completions with full chronological sequence."""
+    def tag_single_frame(self, frame_b64: str) -> Dict[str, Any]:
+        """Stage 1: Fast single-frame anomaly scan using Cosmos VLM."""
         url = f"{self.endpoint_url}/chat/completions"
         active_model = self._get_active_model_name()
-        duration = self.get_video_duration(video_path)
-        
-        # Sample 6-8 frames across the entire video
-        frames_with_ts = self.extract_full_video_keyframes(video_path, num_frames=6)
-
-        prompt_intro = (
-            f"{self.SYSTEM_PROMPT}\n\n"
-            f"Location Hint: {location_hint}\n"
-            f"Total Video Duration: {duration:.1f} seconds. Below are {len(frames_with_ts)} chronological frames sampled across the full video:"
-        )
-
-        content_elements = [{"type": "text", "text": prompt_intro}]
-
-        for t_sec, b64 in frames_with_ts:
-            content_elements.append({
-                "type": "text",
-                "text": f"[Frame Timestamp T={t_sec:.1f}s / {duration:.1f}s]:"
-            })
-            content_elements.append({
-                "type": "image_url",
-                "image_url": {"url": f"data:image/jpeg;base64,{b64}"}
-            })
-
-        content_elements.append({
-            "type": "text",
-            "text": "Analyze the full temporal progression above. Output the strict JSON object now."
-        })
 
         payload = {
             "model": active_model,
             "messages": [
-                {"role": "user", "content": content_elements}
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": self.STAGE1_TAG_PROMPT},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{frame_b64}"}}
+                    ]
+                }
             ],
+            "temperature": 0.1,
+            "max_tokens": 256
+        }
+
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            raw = data["choices"][0]["message"]["content"].strip()
+            if "```json" in raw:
+                raw = raw.split("```json")[1].split("```")[0]
+            elif "```" in raw:
+                raw = raw.split("```")[1].split("```")[0]
+            return json.loads(raw.strip())
+
+    def deep_sequence_diagnosis(self, frames_sequence: List[Tuple[float, str]], location_hint: str) -> VisualContextSummary:
+        """Stage 2: Multi-frame temporal sequence deep dive for rich emergency dispatch data."""
+        url = f"{self.endpoint_url}/chat/completions"
+        active_model = self._get_active_model_name()
+
+        content_elements = [
+            {
+                "type": "text",
+                "text": f"{self.STAGE2_DEEP_PROMPT}\n\nIncident Location: {location_hint}\nBelow is the chronological multi-frame sequence:"
+            }
+        ]
+
+        for t_sec, b64 in frames_sequence:
+            content_elements.append({"type": "text", "text": f"[Frame @ T={t_sec:.1f}s]:"})
+            content_elements.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}})
+
+        content_elements.append({"type": "text", "text": "Synthesize the full progression and output the strict emergency dispatch JSON."})
+
+        payload = {
+            "model": active_model,
+            "messages": [{"role": "user", "content": content_elements}],
             "temperature": 0.1,
             "max_tokens": 1024
         }
@@ -183,10 +179,10 @@ Output ONLY the JSON object without commentary."""
             data=json.dumps(payload).encode("utf-8"),
             headers={"Content-Type": "application/json"}
         )
-        with urllib.request.urlopen(req, timeout=45) as resp:
+        with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-            raw_text = data["choices"][0]["message"]["content"]
-            return self.parse_vlm_json_output(raw_text)
+            raw = data["choices"][0]["message"]["content"]
+            return self.parse_vlm_json_output(raw)
 
     def stream_video_feed(
         self,
@@ -194,42 +190,98 @@ Output ONLY the JSON object without commentary."""
         location_hint: str = "5th Ave & Market St Intersection",
         speed_multiplier: float = 1.0
     ) -> Generator[StreamFrameEvent, None, None]:
-        """Streams real-time edge monitoring with live wall-clock timestamps and real video duration."""
-        start_time = time.time()
-        video_duration = self.get_video_duration(video_path)
+        """Streams continuous Stage 1 frame tagging ➔ triggers Stage 2 multi-frame sequence upon anomaly."""
+        duration = self.get_video_duration(video_path)
+        
+        # Sample 5 frame checkpoints across video: 10%, 30%, 50%, 70%, 90%
+        timestamps = [round(duration * p, 1) for p in [0.10, 0.30, 0.50, 0.70, 0.90]]
+        collected_frames: List[Tuple[float, str]] = []
+        anomaly_triggered = False
 
-        # 1. Ingest camera stream connection
-        live_ts = datetime.datetime.now().strftime("%H:%M:%S")
+        for t in timestamps:
+            frame_b64 = self.extract_single_frame(video_path, t)
+            if not frame_b64:
+                continue
+
+            collected_frames.append((t, frame_b64))
+            live_wall_clock = datetime.datetime.now().strftime("%H:%M:%S")
+
+            # Stage 1: Fast Tagging via Cosmos VLM
+            try:
+                tag_result = self.tag_single_frame(frame_b64)
+                has_anomaly = tag_result.get("has_anomaly", False)
+                desc = tag_result.get("description", "Monitoring traffic flow.")
+                anomaly_type = tag_result.get("anomaly_type", "None")
+            except Exception:
+                has_anomaly = False
+                desc = "Camera feed online. Scanning roadway."
+                anomaly_type = "None"
+
+            if has_anomaly and not anomaly_triggered:
+                anomaly_triggered = True
+                # Yield Anomaly Detection Alert
+                yield StreamFrameEvent(
+                    timestamp=live_wall_clock,
+                    elapsed_seconds=t,
+                    status="ANOMALY_DETECTED",
+                    severity="HIGH",
+                    scene_description=f"[T={t:.1f}s] ANOMALY DETECTED: {desc} ({anomaly_type}). Capturing multi-frame sequence...",
+                    visual_summary=None
+                )
+                break
+            else:
+                # Yield Normal Monitoring Frame Event
+                yield StreamFrameEvent(
+                    timestamp=live_wall_clock,
+                    elapsed_seconds=t,
+                    status="NORMAL_MONITORING",
+                    severity="LOW",
+                    scene_description=f"[T={t:.1f}s] NORMAL: {desc}",
+                    visual_summary=None
+                )
+                time.sleep(0.6 / max(speed_multiplier, 0.1))
+
+        # Stage 2: If anomaly triggered or finished, run deep multi-frame sequence diagnosis
+        live_wall_clock = datetime.datetime.now().strftime("%H:%M:%S")
+        if collected_frames:
+            try:
+                deep_summary = self.deep_sequence_diagnosis(collected_frames, location_hint)
+            except Exception:
+                deep_summary = self._extract_scenario_heuristic(video_path, location_hint)
+        else:
+            deep_summary = self._extract_scenario_heuristic(video_path, location_hint)
+
+        deep_summary.timestamp = live_wall_clock
+        is_crisis = deep_summary.severity in ["CRITICAL", "HIGH", "SEVERE"]
+        final_status = "CRISIS_IMPACT" if is_crisis else "ROUTINE_SCENE_MONITORED"
+
         yield StreamFrameEvent(
-            timestamp=live_ts,
-            elapsed_seconds=0.0,
-            status="ACTIVE_STREAM_INGESTION",
-            severity="NORMAL",
-            scene_description=f"Edge Camera active at {location_hint} ({video_duration:.1f}s feed). Sampling temporal frames across video for Cosmos VLM...",
-            visual_summary=None
+            timestamp=live_wall_clock,
+            elapsed_seconds=duration,
+            status=final_status,
+            severity=deep_summary.severity,
+            scene_description=f"Cosmos Multi-Sequence Diagnosis: {deep_summary.raw_summary}",
+            visual_summary=deep_summary
         )
 
-        # 2. Query Cosmos Reasoner across full video duration
-        summary = self.process_video_file(video_path, location_hint)
-        elapsed = time.time() - start_time
-        summary.timestamp = datetime.datetime.now().strftime("%H:%M:%S")
-
-        # 3. Determine event status based on severity
-        is_crisis = summary.severity in ["CRITICAL", "HIGH", "SEVERE"]
-        status_label = "CRISIS_IMPACT_DETECTED" if is_crisis else "SCENE_MONITORED_NORMAL"
-        live_ts = datetime.datetime.now().strftime("%H:%M:%S")
-
-        yield StreamFrameEvent(
-            timestamp=live_ts,
-            elapsed_seconds=round(elapsed, 2),
-            status=status_label,
-            severity=summary.severity,
-            scene_description=f"Cosmos VLM Edge Analysis ({elapsed:.2f}s): {summary.raw_summary}",
-            visual_summary=summary
-        )
+    def process_video_file(self, video_path: str, location_hint: str = "5th Ave & Market St Intersection") -> VisualContextSummary:
+        """Direct end-to-end multi-frame diagnosis."""
+        duration = self.get_video_duration(video_path)
+        timestamps = [round(duration * p, 1) for p in [0.15, 0.40, 0.65, 0.90]]
+        frames = []
+        for t in timestamps:
+            b64 = self.extract_single_frame(video_path, t)
+            if b64:
+                frames.append((t, b64))
+        if frames:
+            try:
+                return self.deep_sequence_diagnosis(frames, location_hint)
+            except Exception:
+                pass
+        return self._extract_scenario_heuristic(video_path, location_hint)
 
     def parse_vlm_json_output(self, raw_response: str) -> VisualContextSummary:
-        """Parses and validates raw VLM text output into the typed VisualContextSummary schema."""
+        """Parses raw VLM output into VisualContextSummary schema."""
         cleaned = raw_response.strip()
         if "```json" in cleaned:
             cleaned = cleaned.split("```json")[1].split("```")[0]
@@ -239,7 +291,6 @@ Output ONLY the JSON object without commentary."""
 
         try:
             data = json.loads(cleaned)
-            
             raw_vehicles = data.get("vehicles_involved", 1)
             if isinstance(raw_vehicles, list):
                 vehicles_count = len(raw_vehicles)
@@ -249,14 +300,6 @@ Output ONLY the JSON object without commentary."""
                 vehicles_count = int(raw_vehicles)
 
             raw_sev = str(data.get("severity", "LOW")).upper()
-            raw_summary_text = data.get("raw_summary", raw_response[:250])
-            hazard_list = list(data.get("hazard_indicators", []))
-
-            # Smart severity normalization
-            if any(phrase in raw_summary_text.lower() for phrase in ["no accidents", "no visible signs of collision", "no immediate hazards", "typical urban traffic", "no signs of collision or damage"]):
-                if not hazard_list:
-                    raw_sev = "LOW"
-
             if raw_sev in ["SEVERE", "CRITICAL"]:
                 severity_str = "CRITICAL"
             elif raw_sev in ["HIGH"]:
@@ -269,11 +312,11 @@ Output ONLY the JSON object without commentary."""
             return VisualContextSummary(
                 location=data.get("location", "5th Ave & Market St Intersection"),
                 camera_id=str(data.get("camera_id", "CAM-DGX-SPARK-01")),
-                crisis_type=data.get("crisis_type", "Traffic Observation"),
+                crisis_type=data.get("crisis_type", "Physical Incident"),
                 severity=severity_str,
                 vehicles_involved=vehicles_count,
-                hazard_indicators=hazard_list,
-                raw_summary=raw_summary_text,
+                hazard_indicators=list(data.get("hazard_indicators", [])),
+                raw_summary=data.get("raw_summary", raw_response[:250]),
                 confidence=float(data.get("confidence", 0.95)),
                 timestamp=datetime.datetime.now().strftime("%H:%M:%S")
             )
@@ -281,11 +324,11 @@ Output ONLY the JSON object without commentary."""
             return VisualContextSummary(
                 location="5th Ave & Market St Intersection",
                 camera_id="CAM-DGX-SPARK-01",
-                crisis_type="Traffic Scene Observation",
-                severity="LOW",
-                vehicles_involved=1,
+                crisis_type="Traffic Incident",
+                severity="HIGH",
+                vehicles_involved=2,
                 hazard_indicators=[],
-                raw_summary=raw_response,
+                raw_summary=raw_response[:250],
                 confidence=0.90,
                 timestamp=datetime.datetime.now().strftime("%H:%M:%S")
             )
