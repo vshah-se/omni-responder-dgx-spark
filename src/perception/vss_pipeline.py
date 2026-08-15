@@ -12,10 +12,10 @@ from src.config.settings import settings
 
 @dataclass
 class VisualContextSummary:
-    """Standardized JSON schema emitted by Cosmos Reasoner VLM for the Orchestrator."""
-    location: str = "Live Camera Feed Location"
+    """Standardized JSON schema emitted purely by Cosmos Reasoner VLM for the Orchestrator."""
+    location: str = "Surveillance Scene Location"
     camera_id: str = "CAM-DGX-SPARK-01"
-    crisis_type: str = "Traffic Flow"
+    crisis_type: str = "Roadway Traffic Observation"
     severity: str = "LOW"  # "CRITICAL", "HIGH", "MEDIUM", "LOW"
     vehicles_involved: int = 0
     hazard_indicators: List[str] = field(default_factory=list)
@@ -25,6 +25,7 @@ class VisualContextSummary:
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
+
 
 @dataclass
 class StreamFrameEvent:
@@ -37,29 +38,28 @@ class StreamFrameEvent:
     visual_summary: Optional[VisualContextSummary] = None
 
 class VSSPerceptionPipeline:
-    """True Pixel-Level Vision Pipeline: Real Motion Differencing -> High-Definition Burst on Cosmos Reasoner."""
+    """Unbiased Vision Pipeline: Pure Pixel Differencing -> Cosmos Reasoner VLM Reasoning."""
 
-    STAGE2_DEEP_PROMPT = """You are an objective High-Definition Surveillance Vision Reasoner on NVIDIA DGX Spark.
-Examine this high-definition sequence of frames captured directly from an edge roadway surveillance camera.
+    STAGE2_DEEP_PROMPT = """You are an objective Edge Surveillance Vision Reasoner on NVIDIA DGX Spark.
+Analyze this high-definition sequence of frames captured directly from an edge roadway surveillance camera.
 
-Vehicle Identification Guidelines:
-- Carefully identify all vehicles by their actual physical body type, size, and color (e.g. yellow passenger sedan, red hatchback, black pickup, white commercial trailer).
-- Do not call a yellow car a school bus or a red car a fire truck unless official signage, flashers, or markings are clearly visible.
+Instructions:
+1. Physical Setting: Describe the physical environment and location observed in the video background (e.g. Rural Highway, Multi-Lane Interstate, Urban Commercial Intersection, Mountain Road).
+2. Vehicle Identification: Identify all vehicles visibly present by their true physical body type, size, and color (e.g. sedan, hatchback, SUV, pickup, commercial tractor-trailer, bus, motorcycle).
+3. Incident & Severity Assessment:
+   - "LOW": Normal moving traffic flow with no accidents, collisions, or hazards.
+   - "MEDIUM": Minor roadside incident, vehicle stopped on shoulder with hazard lights, towing operation, or weather caution.
+   - "HIGH" or "CRITICAL": Active collision impact, vehicle wreckage or debris blocking lanes, structural fire, heavy smoke, or hazardous fluid spills.
 
-Scene Categorization:
-1. Normal Traffic Flow: Vehicles moving smoothly with no accidents or lane blockages -> severity="LOW", crisis_type="Normal Traffic Flow", hazard_indicators=[]
-2. Roadside Incident / Towing / Breakdown: A vehicle stopped on the shoulder with hazard lights, tow truck assisting, minor weather slowdown -> severity="MEDIUM", crisis_type="Roadside Assistance / Vehicle on Shoulder", hazard_indicators=["vehicle on shoulder"]
-3. Vehicle Collision / Fire / Chemical Spill: Physical impact between vehicles, wreckage or debris blocking active lanes, flames, smoke, or spilled fluids -> severity="CRITICAL" or "HIGH", crisis_type="Vehicle Collision", hazard_indicators=["wreckage", "debris", etc.]
-
-Output a STRICT JSON object:
+Output ONLY a STRICT JSON object with these exact keys:
 {
-  "location": "string (physical scene setting observed in pixels, e.g. Urban Intersection or Highway Corridor)",
+  "location": "string (physical setting observed in video pixels)",
   "camera_id": "string",
-  "crisis_type": "string",
+  "crisis_type": "string (objective physical classification of the scene)",
   "severity": "CRITICAL" | "HIGH" | "MEDIUM" | "LOW",
-  "vehicles_involved": integer,
-  "hazard_indicators": ["list of observed hazards or empty"],
-  "raw_summary": "2-3 sentence visual summary describing the exact vehicles, impact/roadside state, and roadway conditions",
+  "vehicles_involved": integer (number of vehicles involved in the incident),
+  "hazard_indicators": ["list of observed physical hazards such as smoke, fire, fluid leak, debris, or empty array if none"],
+  "raw_summary": "2-3 sentence visual summary describing exactly what is seen in the frames without speculation",
   "confidence": float (0.0 to 1.0)
 }"""
 
@@ -141,7 +141,6 @@ Output a STRICT JSON object:
         """Computes true mathematical pixel delta across video timeline to locate exact anomaly moment."""
         duration = self.get_video_duration(video_path)
         
-        # Sample 8 checkpoints across the video
         num_samples = 8
         sample_times = [round((i + 0.5) * (duration / num_samples), 2) for i in range(num_samples)]
         
@@ -154,23 +153,18 @@ Output a STRICT JSON object:
         if len(thumbnails) < 2:
             return False, duration * 0.5, "Standard traffic flow"
 
-        # Calculate absolute pixel difference between consecutive frames
         deltas = []
         for i in range(1, len(thumbnails)):
             t_curr, bytes_curr = thumbnails[i]
             _, bytes_prev = thumbnails[i - 1]
-            
-            # Mean absolute pixel difference
             diff = sum(abs(b1 - b2) for b1, b2 in zip(bytes_curr, bytes_prev)) / len(bytes_curr)
             deltas.append((t_curr, diff))
 
-        # Find maximum delta (peak motion change / impact / stoppage)
         max_t, max_diff = max(deltas, key=lambda x: x[1])
         avg_diff = sum(d[1] for d in deltas) / len(deltas)
 
-        # If peak difference exceeds 1.3x baseline variance, an anomaly/impact occurred
         if max_diff > (avg_diff * 1.25) and max_diff > 8.0:
-            return True, max_t, f"Motion & scene variance spike detected (Δ={max_diff:.1f})"
+            return True, max_t, f"Pixel motion variance spike detected (Δ={max_diff:.1f})"
 
         return False, max_t, "Continuous traffic flow"
 
@@ -193,7 +187,7 @@ Output a STRICT JSON object:
         url = f"{self.endpoint_url}/chat/completions"
         active_model = self._get_active_model_name()
 
-        loc_text = f"Registered Location: {location_hint}" if location_hint else "Determine physical setting from video pixels."
+        loc_text = f"Registered Location Metadata: {location_hint}" if location_hint else "Derive physical setting directly from video pixels."
         content_elements = [
             {
                 "type": "text",
@@ -230,7 +224,7 @@ Output a STRICT JSON object:
         location_hint: Optional[str] = None,
         speed_multiplier: float = 1.0
     ) -> Generator[StreamFrameEvent, None, None]:
-        """Streams real-time edge monitoring driven purely by pixel analysis."""
+        """Streams real-time edge monitoring driven purely by pixel analysis and Cosmos Reasoner."""
         duration = self.get_video_duration(video_path)
         has_anomaly, anomaly_t, anomaly_desc = self.scan_motion_and_anomaly_points(video_path)
 
@@ -259,7 +253,6 @@ Output a STRICT JSON object:
                 visual_summary=None
             )
 
-        # Extract frames around detected anomaly or midpoint
         target_t = anomaly_t if has_anomaly else duration * 0.5
         burst_frames = self.extract_targeted_burst(video_path, target_t)
         
@@ -271,10 +264,10 @@ Output a STRICT JSON object:
         summary.camera_id = camera_id
         summary.timestamp = datetime.datetime.now().strftime("%H:%M:%S")
 
-        # Route status strictly from Cosmos Reasoner's output
-        if summary.severity in ["CRITICAL", "HIGH", "SEVERE"] or "collision" in summary.crisis_type.lower() or "crash" in summary.raw_summary.lower():
+        # Route status dynamically from Cosmos Reasoner's output
+        if summary.severity in ["CRITICAL", "HIGH", "SEVERE"]:
             final_status = "CRISIS_IMPACT"
-        elif summary.severity in ["MEDIUM", "MODERATE"] or "roadside" in summary.crisis_type.lower():
+        elif summary.severity in ["MEDIUM", "MODERATE"]:
             final_status = "ROADSIDE_ASSISTANCE"
         else:
             final_status = "ROUTINE_ALL_CLEAR"
@@ -300,7 +293,7 @@ Output a STRICT JSON object:
         return self._extract_scenario_heuristic(video_path, location_hint)
 
     def parse_vlm_json_output(self, raw_response: str, location_hint: Optional[str] = None) -> VisualContextSummary:
-        """Parses and grounds raw VLM output."""
+        """Parses and preserves exact visual reasoning from Cosmos Reasoner with zero overwrites."""
         cleaned = raw_response.strip()
         if "```json" in cleaned:
             cleaned = cleaned.split("```json")[1].split("```")[0]
@@ -310,81 +303,65 @@ Output a STRICT JSON object:
 
         try:
             data = json.loads(cleaned)
-            raw_summary_text = data.get("raw_summary", raw_response[:250])
-            raw_crisis_type = data.get("crisis_type", "Roadway Incident")
-            hazard_list = list(data.get("hazard_indicators", []))
-            raw_sev = str(data.get("severity", "HIGH")).upper()
-            detected_loc = location_hint or data.get("location", "Surveillance Camera Scene")
+            
+            # Extract fields directly from Cosmos VLM response
+            vlm_summary = str(data.get("raw_summary", raw_response[:250]))
+            vlm_crisis = str(data.get("crisis_type", "Roadway Traffic Observation"))
+            vlm_hazards = list(data.get("hazard_indicators", []))
+            vlm_location = location_hint or str(data.get("location", "Surveillance Camera Scene"))
+            vlm_camera = str(data.get("camera_id", "CAM-DGX-SPARK-01"))
+            vlm_confidence = float(data.get("confidence", 0.96))
 
-            # Check if this is an actual collision / severe accident
-            is_collision = any(kw in raw_summary_text.lower() or kw in raw_crisis_type.lower() for kw in [
-                "collision", "struck", "crash", "wreckage", "debris", "severe accident", "impact"
-            ])
-
-            # Check for all clear
-            no_crisis_phrases = [
-                "no visible signs of an emergency",
-                "no emergency incident",
-                "no indications of fire",
-                "no visible hazards",
-                "calm and routine",
-                "vehicles are moving normally"
-            ]
-            is_all_clear = any(phrase in raw_summary_text.lower() for phrase in no_crisis_phrases) and not is_collision
-
-            is_roadside = any(phrase in raw_summary_text.lower() or phrase in raw_crisis_type.lower() for phrase in [
-                "towing", "shoulder", "disabled vehicle", "breakdown", "roadside assistance", "snow conditions"
-            ]) and not is_collision
-
-            if is_collision:
-                raw_crisis_type = "Vehicle Collision"
-                severity_str = "CRITICAL" if raw_sev in ["CRITICAL", "SEVERE"] else "HIGH"
-            elif is_roadside:
-                raw_crisis_type = "Roadside Assistance / Vehicle on Shoulder"
+            # Normalize severity safely without altering Cosmos's intent
+            raw_sev = str(data.get("severity", "LOW")).upper()
+            if raw_sev in ["SEVERE", "CRITICAL"]:
+                severity_str = "CRITICAL"
+            elif raw_sev in ["HIGH"]:
+                severity_str = "HIGH"
+            elif raw_sev in ["MEDIUM", "MODERATE"]:
                 severity_str = "MEDIUM"
-            elif is_all_clear:
-                raw_crisis_type = "Normal Highway Traffic (All Clear)"
-                severity_str = "LOW"
-                hazard_list = []
             else:
-                severity_str = "HIGH" if raw_sev in ["CRITICAL", "HIGH"] else "LOW"
+                severity_str = "LOW"
 
-            raw_vehicles = data.get("vehicles_involved", 2)
+            # Parse vehicles count from Cosmos
+            raw_vehicles = data.get("vehicles_involved", 1)
             if isinstance(raw_vehicles, list):
                 vehicles_count = len(raw_vehicles)
-            elif isinstance(raw_vehicles, str) and not raw_vehicles.isdigit():
-                vehicles_count = 2 if is_collision else 1
+            elif isinstance(raw_vehicles, str) and raw_vehicles.isdigit():
+                vehicles_count = int(raw_vehicles)
+            elif isinstance(raw_vehicles, (int, float)):
+                vehicles_count = int(raw_vehicles)
             else:
-                vehicles_count = max(1, int(raw_vehicles)) if is_collision else int(raw_vehicles)
+                vehicles_count = 1 if severity_str in ["MEDIUM", "HIGH", "CRITICAL"] else 0
 
             return VisualContextSummary(
-                location=detected_loc,
-                camera_id=str(data.get("camera_id", "CAM-DGX-SPARK-01")),
-                crisis_type=raw_crisis_type,
+                location=vlm_location,
+                camera_id=vlm_camera,
+                crisis_type=vlm_crisis,
                 severity=severity_str,
                 vehicles_involved=vehicles_count,
-                hazard_indicators=hazard_list,
-                raw_summary=raw_summary_text,
-                confidence=float(data.get("confidence", 0.96)),
+                hazard_indicators=vlm_hazards,
+                raw_summary=vlm_summary,
+                confidence=vlm_confidence,
                 timestamp=datetime.datetime.now().strftime("%H:%M:%S")
             )
         except Exception:
             return VisualContextSummary(
-                location=location_hint or "Roadway Intersection",
+                location=location_hint or "Roadway Surveillance Scene",
                 camera_id="CAM-DGX-SPARK-01",
-                crisis_type="Vehicle Incident",
+                crisis_type="Roadway Incident Observation",
                 severity="HIGH",
-                vehicles_involved=2,
-                hazard_indicators=["wreckage", "debris"],
+                vehicles_involved=1,
+                hazard_indicators=[],
                 raw_summary=raw_response[:250],
-                confidence=0.92,
+                confidence=0.90,
                 timestamp=datetime.datetime.now().strftime("%H:%M:%S")
             )
 
     def _extract_scenario_heuristic(self, video_path: str, location_hint: Optional[str] = None) -> VisualContextSummary:
         """Offline fallback only when Spark NIM is unreachable."""
         return VisualContextSummary(
-            location=location_hint or "Roadway Surveillance Location",
+            location=location_hint or "Roadway Surveillance Scene",
             camera_id="CAM-OFFLINE-MOCK",
             crisis_type="Physical Emergency Incident",
             severity="HIGH",
