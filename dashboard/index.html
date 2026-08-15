@@ -135,7 +135,11 @@ button.tog:hover{color:var(--ink-hi); border-color:var(--line-hi)}
   border-bottom:1px solid var(--line); flex-shrink:0;
   font-family:var(--mono); font-size:11px; letter-spacing:.13em; text-transform:uppercase; color:var(--dim);
 }
-.pane-hd .tag{margin-left:auto; color:var(--dimmer); letter-spacing:.1em}
+.pane-hd .tag{margin-left:auto; color:var(--dim); letter-spacing:.1em}
+#clipPick{
+  font-family:var(--mono); font-size:10.5px; background:var(--panel-2); color:var(--ink);
+  border:1px solid var(--line-hi); border-radius:2px; padding:2px 5px; max-width:230px;
+}
 .pane-bd{flex:1; min-height:0; position:relative}
 
 /* ---------- video ---------- */
@@ -259,12 +263,14 @@ button.tog:hover{color:var(--ink-hi); border-color:var(--line-hi)}
   <div class="grid">
 
     <section class="pane" id="pane-video">
-      <div class="pane-hd">Camera feed <span class="tag" id="cam">no stream</span></div>
+      <div class="pane-hd">Camera feed
+        <select id="clipPick" aria-label="Choose clip" hidden></select>
+        <span class="tag" id="cam">no stream</span></div>
       <div class="pane-bd"><div class="stage">
-        <video id="vid" muted playsinline preload="auto"><source src="clips/tanker.mp4" type="video/mp4"></video>
+        <video id="vid" muted playsinline preload="metadata"></video>
         <div class="void" id="void">
-          <p>No clip mounted</p>
-          <p style="color:var(--dimmer)">Drop your incident clip at<br><code>dashboard/clips/tanker.mp4</code><br>and reload. The pipeline runs without it.</p>
+          <p>No clip found</p>
+          <p style="color:var(--dim)">Drop an .mp4 in <code>dashboard/clips/</code><br>or <code>data/video_clips/</code> and reload.<br>The pipeline runs without it.</p>
         </div>
         <svg class="boxes" id="boxes" viewBox="0 0 100 100" preserveAspectRatio="none"></svg>
         <div class="readout" id="readout" hidden>
@@ -349,8 +355,32 @@ const W = { incident:null, zones:null, route:null, wind:null, dispatches:[], cou
 
 /* ---------- video ---------- */
 const vid = $("vid");
-vid.addEventListener("loadeddata", ()=>{ $("void").style.display="none"; });
-vid.addEventListener("error", ()=>{ vid.style.display="none"; });
+vid.addEventListener("loadeddata", ()=>{ $("void").style.display="none"; vid.style.display=""; });
+vid.addEventListener("error", ()=>{ vid.style.display="none"; $("void").style.display=""; });
+
+function loadClip(url){
+  vid.src = url;
+  vid.load();
+}
+
+/* The server reports which mp4s are actually on disk, smallest first — a large
+   file stutters badly over an SSH tunnel, so the smallest is the safest default. */
+(async function discoverClips(){
+  try{
+    const r = await fetch("/clip-manifest");
+    const {clips} = await r.json();
+    if(!clips || !clips.length) return;
+    const pick = $("clipPick");
+    pick.hidden = false;
+    for(const c of clips){
+      const o=document.createElement("option");
+      o.value=c.url; o.textContent=`${c.name} · ${c.mb} MB`;
+      pick.appendChild(o);
+    }
+    pick.addEventListener("change", ()=>loadClip(pick.value));
+    loadClip(clips[0].url);
+  }catch(e){ /* no manifest route: leave the empty state up */ }
+})();
 
 function drawBoxes(boxes){
   const svg=$("boxes"); svg.replaceChildren();

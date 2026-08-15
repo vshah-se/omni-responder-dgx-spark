@@ -24,8 +24,10 @@ from datetime import datetime, timezone
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 HERE = pathlib.Path(__file__).parent
+REPO = HERE.parent
 app = FastAPI(title="Omni-Responder Bus")
 
 clients: set[WebSocket] = set()
@@ -45,9 +47,31 @@ async def broadcast(event: dict) -> None:
         clients.discard(ws)
 
 
+# Video needs a route or the player 404s. Two mounts: dashboard/clips for a clip
+# you drop in yourself, and the repo's own clips so no copying is needed at all.
+for _url, _dir in (("/clips", HERE / "clips"), ("/video", REPO / "data" / "video_clips")):
+    if _dir.is_dir():
+        app.mount(_url, StaticFiles(directory=str(_dir)), name=_url.strip("/"))
+
+
 @app.get("/")
 async def index():
     return FileResponse(HERE / "index.html")
+
+
+@app.get("/clip-manifest")
+async def clip_manifest():
+    """Which videos are actually available, best candidate first. The page probes
+    this instead of hardcoding a filename that may not exist."""
+    out = []
+    for url, d in (("/clips", HERE / "clips"), ("/video", REPO / "data" / "video_clips")):
+        if not d.is_dir():
+            continue
+        for f in sorted(d.glob("*.mp4"), key=lambda x: x.stat().st_size):
+            out.append({"url": f"{url}/{f.name}",
+                        "name": f.name,
+                        "mb": round(f.stat().st_size / 1e6, 1)})
+    return {"clips": out}
 
 
 @app.post("/ingest")
