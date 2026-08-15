@@ -36,8 +36,16 @@ from src.orchestrator.incident_manager import IncidentOrchestrator          # no
 from src.perception.vss_pipeline import VSSPerceptionPipeline               # noqa: E402
 
 BUS = "http://localhost:8080/ingest"
-SEVERITY = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}
-MODE = {"live": False}          # flipped True if a VSS endpoint actually answers
+# H1's vocabulary has grown past the original four levels — map every value they
+# can emit, or unknown ones silently collapse to 2 and the map draws wrong zones.
+SEVERITY = {"LOW": 0, "MEDIUM": 1, "MODERATE": 1,
+            "HIGH": 2, "SEVERE": 3, "CRITICAL": 3}
+# The orchestrator renamed this event between commits. Accept both.
+TRIGGER = {"CRISIS_DISPATCH_TRIGGERED", "DISPATCH_SUMMARY_TRIGGERED"}
+STATUS_MAP = {"NORMAL_MONITORING": "clear", "ROUTINE_ALL_CLEAR": "clear",
+              "ANOMALY_DETECTED": "anomaly", "ROADSIDE_ASSISTANCE": "roadside_assistance",
+              "CRISIS_IMPACT": "collision"}
+MODE = {"live": False, "probe": None}          # flipped True if a VSS endpoint actually answers
 SEQ = {"n": 0}
 
 
@@ -79,6 +87,9 @@ def load_coords():
 
 
 COORDS = load_coords()
+# H1 now derives location text from the video itself, so the name often won't
+# match scenarios.json. Without a fallback the map silently stays blank.
+FALLBACK_GEO = {}
 
 
 def resolve(location_name, fallback_id=None):
@@ -89,7 +100,7 @@ def resolve(location_name, fallback_id=None):
     for name, c in COORDS.items():                # loose match: VLM may reword the name
         if name and location_name and name.split("&")[0].strip().lower() in location_name.lower():
             return c
-    return None
+    return FALLBACK_GEO if FALLBACK_GEO.get("lat") is not None else None
 
 
 # ---------------------------------------------------------------- telemetry
@@ -127,21 +138,35 @@ def telemetry_loop(stop, clock, streams, calls):
 
 # ---------------------------------------------------------------- mode probe
 def probe_live_mode(pipeline):
-    """Wrap the upload path so we know whether the VLM answered or the canned
-    heuristic did. Without this the fallback is invisible, which is the single
-    biggest credibility risk in the demo."""
-    original = pipeline._upload_to_vss_api
+    """Flag whether the VLM actually answered or the canned heuristic did.
 
-    def wrapped(*a, **kw):
-        try:
-            result = original(*a, **kw)
-            MODE["live"] = True
-            return result
-        except Exception:
-            MODE["live"] = False
-            raise
+    H1 refactors this layer often, so wrap whichever method exists rather than
+    assuming one name. If none is found we stay honest and report unknown
+    instead of implying live inference."""
+    for name in ("_upload_to_vss_api", "deep_sequence_diagnosis",
+                 "scan_motion_and_anomaly_points", "process_video_file"):
+        original = getattr(pipeline, name, None)
+        if original is None:
+            continue
 
-    pipeline._upload_to_vss_api = wrapped
+        def make(orig):
+            def wrapped(*a, **kw):
+                try:
+                    result = orig(*a, **kw)
+                    MODE["live"] = True
+                    return result
+                except Exception:
+                    MODE["live"] = False
+                    raise
+            return wrapped
+
+        setattr(pipeline, name, make(original))
+        MODE["probe"] = name
+        return
+
+    MODE["probe"] = None
+    print("[adapter] WARNING: no known inference method to probe; "
+          "live-vs-fallback will read as unknown", file=sys.stderr)
 
 
 # ---------------------------------------------------------------- decompose
@@ -165,7 +190,8 @@ def emit_incident(record, t, streams, calls):
         "severity": sev,
         "confidence": float(p.get("confidence", 0.9)),
         "wind": {"from_deg": WIND["deg"], "speed_mps": WIND["mps"]},
-        "inference_mode": "live_vlm" if MODE["live"] else "heuristic_fallback",
+        "inference_mode": ("live_vlm" if MODE["live"] else "heuristic_fallback")
+                          if MODE["probe"] else "unverified",
     }
     if coords:
         perception["location"] = {"name": p.get("location"), **coords}
@@ -282,6 +308,8 @@ def main():
     ap.add_argument("--speed", type=float, default=1.0)
     ap.add_argument("--wind-from", type=int, default=200,
                     help="degrees the wind blows FROM; drives the protective wedge")
+    ap.add_argument("--lat", type=float, help="override incident latitude")
+    ap.add_argument("--lon", type=float, help="override incident longitude")
     ap.add_argument("--bus", default=BUS)
     args = ap.parse_args()
 
@@ -290,10 +318,15 @@ def main():
 
     video, location = args.video, args.location
     if args.scenario:
-        for s in json.loads((REPO / "data" / "scenarios.json").read_text()):
-            if s["id"] == args.scenario:
-                video, location = s["video_file"], s["location_name"]
+        for sc in json.loads((REPO / "data" / "scenarios.json").read_text()):
+            if sc["id"] == args.scenario:
+                video, location = sc["video_file"], sc["location_name"]
+                c = sc.get("coordinates") or {}
+                if c.get("lat") is not None:
+                    FALLBACK_GEO.update(lat=c["lat"], lon=c.get("lng", c.get("lon")))
                 break
+    if args.lat is not None and args.lon is not None:
+        FALLBACK_GEO.update(lat=args.lat, lon=args.lon)
 
     video_path = video if pathlib.Path(video).is_absolute() else str(REPO / video)
 
@@ -312,21 +345,21 @@ def main():
         for frame in orch.stream_incident(video_path, location_hint=location,
                                           speed_multiplier=args.speed):
             t = frame.get("elapsed_seconds", time.time() - clock["t0"])
-            if frame["event_type"] == "CRISIS_DISPATCH_TRIGGERED":
+            if frame["event_type"] in TRIGGER:
                 emit_incident(frame["incident_record"], t, streams, calls)
             else:
                 emit("perception", "tracker-tier0", {
                     "camera_id": "edge-monitor",
-                    "incident_type": {"NORMAL_MONITORING": "clear",
-                                      "ANOMALY_DETECTED": "anomaly"}.get(frame["status"], "clear"),
+                    "incident_type": STATUS_MAP.get(frame["status"], "clear"),
                     "hazard_description": frame["scene_description"],
                     "severity": SEVERITY.get(frame["severity"], 0),
                     "confidence": 0.95,
                 }, t)
     finally:
         stop.set()
-        print(f"[adapter] done — inference mode was "
-              f"{'LIVE VLM' if MODE['live'] else 'HEURISTIC FALLBACK'}")
+        mode = ("LIVE VLM" if MODE["live"] else "HEURISTIC FALLBACK") \
+            if MODE["probe"] else "UNVERIFIED (no probe point found)"
+        print(f"[adapter] done — inference mode was {mode}")
 
 
 if __name__ == "__main__":
