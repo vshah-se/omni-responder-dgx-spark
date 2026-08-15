@@ -151,8 +151,8 @@ Output ONLY a STRICT JSON object with these exact keys:
         Ignores massive full-frame changes (like scene cuts or fades) by capping the max allowed changed pixels.
         """
         total_pixels = len(bytes_curr)
-        # Count pixels that changed significantly (ignores encoding noise)
-        changed_pixels = sum(1 for b1, b2 in zip(bytes_curr, bytes_prev) if abs(b1 - b2) > 20)
+        # Count pixels that changed significantly (lowered to 12 to catch low-contrast vehicles on gray roads)
+        changed_pixels = sum(1 for b1, b2 in zip(bytes_curr, bytes_prev) if abs(b1 - b2) > 12)
         
         # If >60% of the image changed, it's a camera cut/fade or full pan. Ignore it.
         if changed_pixels > (total_pixels * 0.60):
@@ -225,8 +225,9 @@ Output ONLY a STRICT JSON object with these exact keys:
         baseline_diffs = [d[2] for d in coarse_deltas if d[2] != best_coarse_diff]
         avg_diff = sum(baseline_diffs) / len(baseline_diffs) if baseline_diffs else best_coarse_diff
 
-        if max_diff > (avg_diff * 1.25) and max_diff > 1.0:
-            return True, max_t, f"Localized spatial anomaly spike detected (Score={max_diff:.1f})"
+        # Sensitive to tiny anomalies (down to 0.05% of pixels, e.g. a small car crash in an aerial view)
+        if max_diff > (avg_diff * 1.2) and max_diff > 0.05:
+            return True, max_t, f"Localized spatial anomaly spike detected (Score={max_diff:.2f})"
 
         return False, max_t, "Continuous traffic flow"
 
