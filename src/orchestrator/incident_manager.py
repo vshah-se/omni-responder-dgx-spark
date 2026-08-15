@@ -17,13 +17,15 @@ class IncidentOrchestrator:
         self.traffic_agent = TrafficAgent()
         self.comms_agent = CommsAgent()
 
-    def process_incident(self, video_input: Union[str, VisualContextSummary], location_hint: str = "5th Ave & Market St Intersection") -> Dict[str, Any]:
+    def process_incident(self, video_input: Union[str, VisualContextSummary], location_hint: Optional[str] = None) -> Dict[str, Any]:
         """Main end-to-end incident dispatch loop."""
         # 1. Perception Phase (NVIDIA VSS / Cosmos Reasoner VLM)
         if isinstance(video_input, VisualContextSummary):
             visual_summary = video_input
         else:
             visual_summary = self.perception.process_video_file(video_input, location_hint=location_hint)
+
+        effective_location = visual_summary.location
 
         # 2. Hazmat Sub-Agent (Local ERG 2024 Knowledge Base Lookup)
         hazmat_result = self.hazmat_agent.analyze_hazard(
@@ -33,7 +35,7 @@ class IncidentOrchestrator:
 
         # 3. Traffic Sub-Agent (Digital Message Signs & Perimeter Isolation)
         traffic_result = self.traffic_agent.dispatch_reroute(
-            location=visual_summary.location,
+            location=effective_location,
             isolation_radius_meters=hazmat_result.get("isolation_radius_meters", 0),
             severity=visual_summary.severity
         )
@@ -64,15 +66,15 @@ class IncidentOrchestrator:
     def stream_incident(
         self,
         video_path: str,
-        location_hint: str = "5th Ave & Market St Intersection",
+        location_hint: Optional[str] = None,
         speed_multiplier: float = 1.0
     ) -> Generator[Dict[str, Any], None, None]:
         """Streams real-time edge monitoring with live wall-clock timestamps and real video duration."""
         for event in self.perception.stream_video_feed(video_path, location_hint=location_hint, speed_multiplier=speed_multiplier):
-            if event.status == "CRISIS_IMPACT" and event.visual_summary:
+            if event.status in ["CRISIS_IMPACT", "ROADSIDE_ASSISTANCE", "ROUTINE_ALL_CLEAR"] and event.visual_summary:
                 full_dispatch = self.process_incident(event.visual_summary, location_hint=location_hint)
                 yield {
-                    "event_type": "CRISIS_DISPATCH_TRIGGERED",
+                    "event_type": "DISPATCH_SUMMARY_TRIGGERED",
                     "timestamp": event.timestamp,
                     "elapsed_seconds": event.elapsed_seconds,
                     "status": event.status,
