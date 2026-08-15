@@ -141,6 +141,7 @@ Output ONLY a STRICT JSON object with these exact keys:
 
     def scan_motion_and_anomaly_points(self, video_path: str) -> Tuple[bool, float, str]:
         """Computes true mathematical pixel delta across video timeline to locate exact anomaly moment."""
+        import sys
         duration = self.get_video_duration(video_path)
         
         # Sample every 1 second to precisely isolate the moment of impact
@@ -148,10 +149,15 @@ Output ONLY a STRICT JSON object with these exact keys:
         sample_times = [round((i + 0.5) * (duration / num_samples), 2) for i in range(num_samples)]
         
         thumbnails: List[Tuple[float, bytes]] = []
-        for t in sample_times:
+        for i, t in enumerate(sample_times):
+            sys.stdout.write(f"\r\033[K[Motion Scanner] Analyzing timeline: {i+1}/{num_samples} frames (T={t:.1f}s)...")
+            sys.stdout.flush()
             raw = self.extract_raw_grayscale_thumbnail(video_path, t)
             if raw:
                 thumbnails.append((t, raw))
+        
+        sys.stdout.write("\r\033[K")
+        sys.stdout.flush()
 
         if len(thumbnails) < 2:
             return False, duration * 0.5, "Standard traffic flow"
