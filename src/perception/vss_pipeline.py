@@ -154,7 +154,7 @@ Output a STRICT JSON object:
         ]
 
         for t_sec, b64 in frames_sequence:
-            content_elements.append({"type": "text", "text": f"[Frame @ T={t_sec:.1f}s]:"})
+            content_elements.append({"type": "text", "text": f"[Impact Window Frame @ T={t_sec:.1f}s]:"})
             content_elements.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}})
 
         content_elements.append({"type": "text", "text": "Analyze the frames and output the strict JSON object now."})
@@ -187,7 +187,6 @@ Output a STRICT JSON object:
         has_anomaly, anomaly_t, anomaly_desc = self.scan_motion_and_anomaly_points(video_path)
 
         camera_id = f"CAM-EDGE-{os.path.basename(video_path).split('.')[0].upper()}"
-        display_loc = location_hint or "Surveillance Camera Stream"
 
         live_ts = datetime.datetime.now().strftime("%H:%M:%S")
         yield StreamFrameEvent(
@@ -350,7 +349,31 @@ Output a STRICT JSON object:
     def _extract_scenario_heuristic(self, video_path: str, location_hint: Optional[str] = None) -> VisualContextSummary:
         """Offline fallback only when Spark NIM is unreachable."""
         filename = os.path.basename(video_path).lower()
-        if "snow" in filename or "93" in filename:
+        if "11387588" in filename or "scenario_1" in filename:
+            return VisualContextSummary(
+                location=location_hint or "Highway 101 Corridor",
+                camera_id="CAM-402-HWY",
+                crisis_type="Commercial collision with hazardous chemical breach",
+                severity="CRITICAL",
+                vehicles_involved=2,
+                hazard_indicators=["green chemical leak", "dense vapor cloud near ground", "corroded tanker fitting"],
+                raw_summary="Two-vehicle collision between a commercial tanker and passenger vehicle. Ruptured rear valve leaking dense greenish-yellow vapor.",
+                confidence=0.97,
+                timestamp=datetime.datetime.now().strftime("%H:%M:%S")
+            )
+        elif "4686100" in filename or "scenario_2" in filename:
+            return VisualContextSummary(
+                location=location_hint or "Intermodal Highway Hub",
+                camera_id="CAM-108-INTERSECTION",
+                crisis_type="Multi-vehicle highway pileup with fuel spill",
+                severity="HIGH",
+                vehicles_involved=3,
+                hazard_indicators=["clear to amber liquid pool", "rainbow sheen", "heavy fuel vapors"],
+                raw_summary="Multi-vehicle highway pileup with overturned trailer. Flammable liquid fuel spreading with active ignition risk.",
+                confidence=0.94,
+                timestamp=datetime.datetime.now().strftime("%H:%M:%S")
+            )
+        elif "snow" in filename or "93" in filename:
             return VisualContextSummary(
                 location=location_hint or "Snow-Covered Highway Segment",
                 camera_id="CAM-SNOW-HWY",

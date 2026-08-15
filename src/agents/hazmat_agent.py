@@ -6,8 +6,14 @@ from src.config.settings import settings
 class HazmatAgent:
     """Identifies chemical threats using local Emergency Response Guidebook (ERG) database."""
 
-    # Words that should NEVER trigger a chemical alert by themselves
-    STOP_WORDS = {"vehicle", "car", "truck", "road", "highway", "shoulder", "lane", "traffic", "operation", "present", "none", "clear"}
+    # Explicit chemical/fire/hazard indicators that MUST be present to consider a hazmat match
+    HAZARD_KEYWORDS = {
+        "gasoline", "fuel", "diesel", "chlorine", "acid", "sulfuric", "ammonia",
+        "spill", "leak", "plume", "flame", "flames", "fire", "burning", "smoke",
+        "chemical", "toxic", "corrosive", "vapor", "vapors", "explosion", "placard",
+        "sheen", "fumes", "ignited", "igniting", "hazardous", "gas", "cloud",
+        "greenish", "acrid", "pungent", "oily", "corrosion"
+    }
 
     def __init__(self, db_path: str = settings.hazmat_db_path):
         self.db_path = db_path
@@ -20,67 +26,43 @@ class HazmatAgent:
         return []
 
     def analyze_hazard(self, visual_indicators: List[str], severity: str = "HIGH") -> Dict[str, Any]:
-        """Cross-references visual clues with local chemical hazard database with strict phrase matching."""
-        # If no indicators are reported or scene is routine/low/roadside without chemical leaks
+        """Cross-references visual clues with local chemical hazard database with strict keyword verification."""
+        # 1. If scene is low/normal or no indicators are reported, return all-clear
         if not visual_indicators or severity in ["LOW", "NORMAL"]:
-            return {
-                "status": "NO_HAZARDS_DETECTED",
-                "un_number": "NONE",
-                "chemical_name": "None (No Hazardous Materials Observed)",
-                "hazard_class": "N/A",
-                "isolation_radius_meters": 0,
-                "day_protection_km": 0.0,
-                "night_protection_km": 0.0,
-                "ppe_required": "None Required (Standard Operations)",
-                "fire_response": "Standard road operations.",
-                "first_aid": "None required."
-            }
+            return self._all_clear_response()
 
-        # Filter out generic stop words
-        cleaned_indicators = []
-        for ind in visual_indicators:
-            words = [w.lower() for w in ind.split() if w.lower() not in self.STOP_WORDS]
-            if words:
-                cleaned_indicators.append(" ".join(words))
+        # 2. Check if ANY actual hazard/chemical keyword is present in the visual indicators
+        raw_text = " ".join(visual_indicators).lower()
+        words = set(raw_text.replace(",", " ").replace(".", " ").replace("-", " ").split())
+        matched_hazard_keywords = words.intersection(self.HAZARD_KEYWORDS)
 
-        if not cleaned_indicators:
-            return {
-                "status": "NO_HAZARDS_DETECTED",
-                "un_number": "NONE",
-                "chemical_name": "None (No Hazardous Materials Observed)",
-                "hazard_class": "N/A",
-                "isolation_radius_meters": 0,
-                "day_protection_km": 0.0,
-                "night_protection_km": 0.0,
-                "ppe_required": "None Required (Standard Operations)",
-                "fire_response": "Standard road operations.",
-                "first_aid": "None required."
-            }
+        # If no hazard keywords found (e.g. only 'vehicle on shoulder', 'traffic', 'person standing'), return ALL CLEAR
+        if not matched_hazard_keywords:
+            return self._all_clear_response()
 
-        # Match against specific chemical keywords (e.g. 'fuel spill', 'gasoline leak', 'chlorine', 'ammonia', 'acid')
+        # 3. Match against specific chemical records in ERG database
         for entry in self.db:
             db_indicators = entry.get("visual_indicators", [])
             for db_ind in db_indicators:
-                db_ind_lower = db_ind.lower()
-                for obs in cleaned_indicators:
-                    obs_lower = obs.lower()
-                    # Require strong substring or multi-word match
-                    if obs_lower in db_ind_lower or db_ind_lower in obs_lower:
-                        return {
-                            "status": "IDENTIFIED",
-                            "un_number": entry["un_number"],
-                            "chemical_name": entry["chemical_name"],
-                            "hazard_class": entry["hazard_class"],
-                            "isolation_radius_meters": entry["initial_isolation_distance_meters"],
-                            "day_protection_km": entry.get("day_protection_distance_km", 0.5),
-                            "night_protection_km": entry.get("night_protection_distance_km", 1.0),
-                            "ppe_required": entry["ppe_required"],
-                            "fire_response": entry["fire_response"],
-                            "first_aid": entry.get("first_aid", "Move victims upwind and administer oxygen.")
-                        }
+                db_words = set(db_ind.lower().replace("-", " ").split())
+                # Require at least 1 significant chemical keyword match
+                overlap = words.intersection(db_words)
+                if len(overlap) >= 1 and any(w in self.HAZARD_KEYWORDS for w in overlap):
+                    return {
+                        "status": "IDENTIFIED",
+                        "un_number": entry["un_number"],
+                        "chemical_name": entry["chemical_name"],
+                        "hazard_class": entry["hazard_class"],
+                        "isolation_radius_meters": entry["initial_isolation_distance_meters"],
+                        "day_protection_km": entry.get("day_protection_distance_km", 0.5),
+                        "night_protection_km": entry.get("night_protection_distance_km", 1.0),
+                        "ppe_required": entry["ppe_required"],
+                        "fire_response": entry["fire_response"],
+                        "first_aid": entry.get("first_aid", "Move victims upwind and administer oxygen.")
+                    }
 
-        # Only if severe collision with verified smoke/flames/unidentified fluids
-        if severity in ["CRITICAL", "HIGH", "SEVERE"]:
+        # 4. If genuine fire/smoke/spill was detected but chemical is unconfirmed in critical incident
+        if severity in ["CRITICAL", "HIGH", "SEVERE"] and any(kw in words for kw in ["smoke", "fire", "flame", "spill", "leak", "vapor", "fumes"]):
             return {
                 "status": "SUSPICIOUS_HAZARD",
                 "un_number": "UN-UNKNOWN",
@@ -94,6 +76,9 @@ class HazmatAgent:
                 "first_aid": "Evacuate upwind if respiratory distress observed."
             }
 
+        return self._all_clear_response()
+
+    def _all_clear_response(self) -> Dict[str, Any]:
         return {
             "status": "NO_HAZARDS_DETECTED",
             "un_number": "NONE",

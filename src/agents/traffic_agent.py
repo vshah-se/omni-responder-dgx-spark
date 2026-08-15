@@ -9,7 +9,7 @@ class TrafficAgent:
     def dispatch_reroute(self, location: str, isolation_radius_meters: int, severity: str = "LOW") -> Dict[str, Any]:
         severity_upper = severity.upper()
 
-        if isolation_radius_meters == 0 or severity_upper in ["LOW", "NORMAL"]:
+        if severity_upper in ["LOW", "NORMAL"]:
             # Routine traffic flow: No closures, no emergency reroutes
             return {
                 "status": "ALL_CLEAR_MONITORING",
@@ -22,14 +22,14 @@ class TrafficAgent:
                 ]
             }
 
-        if severity_upper in ["MEDIUM", "CONGESTION"] and isolation_radius_meters <= 50:
-            # Minor congestion mitigation: Adjust signals, no roadblocks
+        if severity_upper in ["MEDIUM", "MODERATE", "CONGESTION"] and isolation_radius_meters <= 50:
+            # Roadside breakdown / minor congestion: Adjust signals and post caution, no roadblocks
             return {
                 "status": "CONGESTION_MITIGATION",
                 "closure_id": f"FLOW-OPT-{len(self.active_closures) + 101}",
                 "isolation_radius_meters": 0,
                 "actions_triggered": [
-                    f"VMS Board: 'SLOW TRAFFIC AT {location.upper()} - EXPECT MINOR DELAYS'",
+                    f"VMS Board: 'CAUTION: SLOW TRAFFIC / VEHICLE ON SHOULDER AT {location.upper()}'",
                     "Traffic Signals: Adaptive green phase extended +15s",
                     "Navigation Advisory: Suggest alternate arterials to prevent backup"
                 ]
