@@ -302,7 +302,7 @@ WIND = {"deg": 200, "mps": 4.1, "src": "operator_input"}
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--video", default="data/video_clips/crash_scenario_1.mp4")
+    ap.add_argument("--video", default="data/video_clips/scenario_1.mp4")
     ap.add_argument("--scenario", help="id from data/scenarios.json; overrides --video")
     ap.add_argument("--location", default="5th Ave & Market St Intersection")
     ap.add_argument("--speed", type=float, default=1.0)

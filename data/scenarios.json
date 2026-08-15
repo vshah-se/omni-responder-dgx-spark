@@ -2,7 +2,7 @@
   {
     "id": "scenario_1_chemical_tanker",
     "title": "Commercial Chemical Tanker Breach",
-    "video_file": "data/video_clips/crash_scenario_1.mp4",
+    "video_file": "data/video_clips/scenario_1.mp4",
     "location_name": "5th Ave & Market St Intersection",
     "coordinates": {"lat": 37.7833, "lng": -122.4067},
     "camera_id": "CAM-402-HWY",
@@ -16,7 +16,7 @@
   {
     "id": "scenario_2_highway_rollover",
     "title": "Fuel Tanker Highway Rollover",
-    "video_file": "data/video_clips/crash_scenario_2.mp4",
+    "video_file": "data/video_clips/scenario_2.mp4",
     "location_name": "I-80 Northbound Exit 14",
     "coordinates": {"lat": 37.7950, "lng": -122.3950},
     "camera_id": "CAM-108-INTERSECTION",

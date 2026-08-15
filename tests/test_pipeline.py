@@ -59,7 +59,7 @@ def test_roadside_assistance_orchestration():
 def test_incident_orchestration_with_mock_video():
     orchestrator = IncidentOrchestrator()
     try:
-        incident = orchestrator.process_incident("data/video_clips/crash_scenario_1.mp4", location_hint="Downtown Intersection")
+        incident = orchestrator.process_incident("data/video_clips/scenario_1.mp4", location_hint="Downtown Intersection")
         assert incident["perception"]["severity"] in ["CRITICAL", "HIGH", "MEDIUM", "LOW"]
         assert incident["incident_id"].startswith("CAD-EMG-")
     except Exception as e:
