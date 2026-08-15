@@ -3,7 +3,11 @@
     "un_number": "UN1017",
     "chemical_name": "Chlorine Gas / Liquefied Chlorine",
     "hazard_class": "2.3 (Poison Gas)",
-    "visual_indicators": ["greenish-yellow gas", "pungent odor", "cloud hovering near ground"],
+    "visual_indicators": [
+      "greenish-yellow gas",
+      "pungent odor",
+      "cloud hovering near ground"
+    ],
     "initial_isolation_distance_meters": 100,
     "day_protection_distance_km": 0.8,
     "night_protection_distance_km": 2.3,
@@ -14,7 +18,12 @@
     "un_number": "UN1203",
     "chemical_name": "Gasoline / Motor Fuel",
     "hazard_class": "3 (Flammable Liquid)",
-    "visual_indicators": ["clear to amber liquid", "rainbow sheen on water", "hydrocarbon odor", "rapid flame spread"],
+    "visual_indicators": [
+      "clear to amber liquid",
+      "rainbow sheen on water",
+      "hydrocarbon odor",
+      "rapid flame spread"
+    ],
     "initial_isolation_distance_meters": 50,
     "day_protection_distance_km": 0.3,
     "night_protection_distance_km": 0.5,
@@ -25,7 +34,11 @@
     "un_number": "UN1830",
     "chemical_name": "Sulfuric Acid (Greenish commercial blend)",
     "hazard_class": "8 (Corrosive Substance)",
-    "visual_indicators": ["dense oily liquid", "green/brown tint in commercial carrier", "acrid fumes"],
+    "visual_indicators": [
+      "dense oily liquid",
+      "green/brown tint in commercial carrier",
+      "acrid fumes"
+    ],
     "initial_isolation_distance_meters": 50,
     "day_protection_distance_km": 0.5,
     "night_protection_distance_km": 1.0,
