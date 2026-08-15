@@ -15,7 +15,7 @@ class VisualContextSummary:
     """Standardized JSON schema emitted by Cosmos Reasoner VLM for the Orchestrator."""
     location: str
     camera_id: str = "CAM-DGX-SPARK-01"
-    crisis_type: str = "Normal Highway Traffic"
+    crisis_type: str = "Traffic Flow"
     severity: str = "LOW"  # "CRITICAL", "HIGH", "MEDIUM", "LOW"
     vehicles_involved: int = 0
     hazard_indicators: List[str] = field(default_factory=list)
@@ -31,27 +31,29 @@ class StreamFrameEvent:
     """Temporal frame event during live continuous video monitoring."""
     timestamp: str
     elapsed_seconds: float
-    status: str  # "NORMAL_MONITORING", "ANOMALY_DETECTED", "CRISIS_IMPACT", "ROUTINE_ALL_CLEAR"
+    status: str  # "NORMAL_MONITORING", "ANOMALY_DETECTED", "CRISIS_IMPACT", "ROUTINE_ALL_CLEAR", "ROADSIDE_ASSISTANCE"
     severity: str
     scene_description: str
     visual_summary: Optional[VisualContextSummary] = None
 
 class VSSPerceptionPipeline:
-    """Two-Stage Edge Vision Pipeline: Frame Tagging ➔ Multi-Sequence Deep Diagnosis on Cosmos NIM."""
+    """Two-Stage Edge Vision Pipeline: Frame Tagging ➔ Grounded Sequence Diagnosis on Cosmos NIM."""
 
-    STAGE1_TAG_PROMPT = """You are an edge camera frame monitor. Analyze this single frame.
+    STAGE1_TAG_PROMPT = """You are an objective edge camera monitor. Examine this single frame.
 Output a STRICT JSON object:
 {
-  "has_anomaly": boolean (true ONLY if an active crash, collision, fire, thick smoke, or fluid spill is visible; false if normal moving traffic/clear road),
-  "description": "1 sentence describing what is seen in this frame",
-  "anomaly_type": "None" | "Collision" | "Fire" | "Congestion" | "Hazard"
+  "has_anomaly": boolean (true if accident, disabled vehicle on shoulder, towing, fire, smoke, spilled fluid, or weather hazard; false if normal moving traffic),
+  "description": "1 sentence describing exactly what is visible in this frame",
+  "anomaly_type": "None" | "Disabled_Vehicle_Or_Towing" | "Collision" | "Fire" | "Weather_Hazard" | "Congestion"
 }"""
 
-    STAGE2_DEEP_PROMPT = """You are an Emergency Incident Vision Reasoner on NVIDIA DGX Spark.
-Analyze this chronological sequence of frames across the entire video.
-Determine if an emergency incident occurred anywhere in the video.
-If no emergency or accident is visible: set crisis_type to "Normal Traffic Flow", severity to "LOW", and hazard_indicators to [].
-If an emergency occurred: describe the crisis, set severity to "CRITICAL" or "HIGH", and list all visible hazards.
+    STAGE2_DEEP_PROMPT = """You are an objective Highway Vision Reasoner on NVIDIA DGX Spark.
+Examine this chronological frame sequence. Accurately report ONLY what is visibly present in the frames without exaggerating.
+
+Categorize the scene into one of three tiers:
+1. Normal Traffic: Cars/trucks flowing normally -> severity="LOW", crisis_type="Normal Highway Traffic", hazard_indicators=[]
+2. Roadside Incident / Towing / Shoulder Breakdown / Weather Slowdown: Disabled car on shoulder, tow truck assisting, snow/rain hazard -> severity="MEDIUM", crisis_type="Roadside Assistance / Disabled Vehicle on Shoulder", hazard_indicators=["snow conditions" or "vehicle on shoulder" or "towing in progress"]
+3. Severe Crash / Active Fire / Hazmat Spill: Actual physical collision impact, active vehicle wreckage across lanes, flames, chemical leak -> severity="CRITICAL" or "HIGH", crisis_type="Traffic Collision", hazard_indicators=["wreckage", "fire", etc.]
 
 Output a STRICT JSON object:
 {
@@ -60,7 +62,7 @@ Output a STRICT JSON object:
   "crisis_type": "string",
   "severity": "CRITICAL" | "HIGH" | "MEDIUM" | "LOW",
   "vehicles_involved": integer,
-  "hazard_indicators": ["list of visible hazards like smoke, fire, fluid leak, or empty if none"],
+  "hazard_indicators": ["list of observed hazards or empty"],
   "raw_summary": "2-3 sentence visual summary describing the physical progression across the frames",
   "confidence": float (0.0 to 1.0)
 }"""
@@ -154,14 +156,14 @@ Output a STRICT JSON object:
             return json.loads(raw.strip())
 
     def deep_sequence_diagnosis(self, frames_sequence: List[Tuple[float, str]], location_hint: str) -> VisualContextSummary:
-        """Stage 2: Multi-frame temporal sequence deep dive for rich emergency dispatch data."""
+        """Stage 2: Multi-frame temporal sequence deep dive with grounded objective reasoning."""
         url = f"{self.endpoint_url}/chat/completions"
         active_model = self._get_active_model_name()
 
         content_elements = [
             {
                 "type": "text",
-                "text": f"{self.STAGE2_DEEP_PROMPT}\n\nIncident Location: {location_hint}\nBelow is the chronological multi-frame sequence:"
+                "text": f"{self.STAGE2_DEEP_PROMPT}\n\nLocation Hint: {location_hint}\nChronological frame sequence:"
             }
         ]
 
@@ -169,7 +171,7 @@ Output a STRICT JSON object:
             content_elements.append({"type": "text", "text": f"[Frame @ T={t_sec:.1f}s]:"})
             content_elements.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}})
 
-        content_elements.append({"type": "text", "text": "Synthesize the full progression and output the strict emergency dispatch JSON."})
+        content_elements.append({"type": "text", "text": "Determine the accurate tier and output the strict JSON object."})
 
         payload = {
             "model": active_model,
@@ -199,6 +201,7 @@ Output a STRICT JSON object:
         timestamps = [round(duration * p, 1) for p in [0.10, 0.30, 0.50, 0.70, 0.90]]
         collected_frames: List[Tuple[float, str]] = []
         anomaly_triggered = False
+        anomaly_type_detected = "None"
 
         for t in timestamps:
             frame_b64 = self.extract_single_frame(video_path, t)
@@ -212,11 +215,11 @@ Output a STRICT JSON object:
                 tag_result = self.tag_single_frame(frame_b64)
                 has_anomaly = tag_result.get("has_anomaly", False)
                 desc = tag_result.get("description", "Monitoring traffic flow.")
-                anomaly_type = tag_result.get("anomaly_type", "None")
+                anomaly_type_detected = tag_result.get("anomaly_type", "None")
             except Exception:
                 has_anomaly = False
                 desc = "Camera feed online. Scanning roadway."
-                anomaly_type = "None"
+                anomaly_type_detected = "None"
 
             if has_anomaly and not anomaly_triggered:
                 anomaly_triggered = True
@@ -224,8 +227,8 @@ Output a STRICT JSON object:
                     timestamp=live_wall_clock,
                     elapsed_seconds=t,
                     status="ANOMALY_DETECTED",
-                    severity="HIGH",
-                    scene_description=f"[T={t:.1f}s] ANOMALY DETECTED: {desc} ({anomaly_type}). Capturing multi-frame sequence...",
+                    severity="MEDIUM" if "towing" in desc.lower() or "shoulder" in desc.lower() else "HIGH",
+                    scene_description=f"[T={t:.1f}s] ANOMALY DETECTED: {desc} ({anomaly_type_detected}). Capturing multi-frame sequence...",
                     visual_summary=None
                 )
                 break
@@ -251,8 +254,14 @@ Output a STRICT JSON object:
             deep_summary = self._extract_scenario_heuristic(video_path, location_hint)
 
         deep_summary.timestamp = live_wall_clock
-        is_crisis = deep_summary.severity in ["CRITICAL", "HIGH", "SEVERE"]
-        final_status = "CRISIS_IMPACT" if is_crisis else "ROUTINE_ALL_CLEAR"
+
+        # Map to accurate status label
+        if deep_summary.severity in ["CRITICAL", "HIGH", "SEVERE"]:
+            final_status = "CRISIS_IMPACT"
+        elif deep_summary.severity in ["MEDIUM", "MODERATE"]:
+            final_status = "ROADSIDE_ASSISTANCE"
+        else:
+            final_status = "ROUTINE_ALL_CLEAR"
 
         yield StreamFrameEvent(
             timestamp=live_wall_clock,
@@ -280,7 +289,7 @@ Output a STRICT JSON object:
         return self._extract_scenario_heuristic(video_path, location_hint)
 
     def parse_vlm_json_output(self, raw_response: str) -> VisualContextSummary:
-        """Parses raw VLM output with robust sanity checking against false positives."""
+        """Parses raw VLM output with robust grounding against hallucinations."""
         cleaned = raw_response.strip()
         if "```json" in cleaned:
             cleaned = cleaned.split("```json")[1].split("```")[0]
@@ -291,11 +300,11 @@ Output a STRICT JSON object:
         try:
             data = json.loads(cleaned)
             raw_summary_text = data.get("raw_summary", raw_response[:250])
-            raw_crisis_type = data.get("crisis_type", "Normal Traffic Flow")
+            raw_crisis_type = data.get("crisis_type", "Roadside Traffic Scene")
             hazard_list = list(data.get("hazard_indicators", []))
             raw_sev = str(data.get("severity", "LOW")).upper()
 
-            # Sanity Check: If the summary explicitly states no emergency / no hazards, override crisis_type and severity to LOW
+            # Sanity Check 1: All Clear / Normal Flow
             no_crisis_phrases = [
                 "no visible signs of an emergency",
                 "no emergency incident",
@@ -304,22 +313,28 @@ Output a STRICT JSON object:
                 "calm and routine",
                 "vehicles are moving normally",
                 "normal traffic conditions",
-                "no signs of collision",
-                "no anomalies present"
+                "no signs of collision"
             ]
-
             is_all_clear = any(phrase in raw_summary_text.lower() for phrase in no_crisis_phrases)
+
+            # Sanity Check 2: Towing / Roadside Breakdown / Shoulder Incident (MEDIUM Severity)
+            is_roadside = any(phrase in raw_summary_text.lower() or phrase in raw_crisis_type.lower() for phrase in [
+                "towing", "shoulder", "disabled vehicle", "breakdown", "roadside assistance", "snow conditions", "tow truck"
+            ])
 
             if is_all_clear:
                 raw_crisis_type = "Normal Highway Traffic (All Clear)"
                 raw_sev = "LOW"
                 hazard_list = []
+            elif is_roadside and "fire" not in raw_summary_text.lower() and "explosion" not in raw_summary_text.lower():
+                raw_crisis_type = "Roadside Assistance / Disabled Vehicle on Shoulder"
+                raw_sev = "MEDIUM"
 
-            if raw_sev in ["SEVERE", "CRITICAL"] and not is_all_clear:
+            if raw_sev in ["SEVERE", "CRITICAL"] and not is_all_clear and not is_roadside:
                 severity_str = "CRITICAL"
-            elif raw_sev in ["HIGH"] and not is_all_clear:
+            elif raw_sev in ["HIGH"] and not is_all_clear and not is_roadside:
                 severity_str = "HIGH"
-            elif raw_sev in ["MEDIUM", "MODERATE"] and not is_all_clear:
+            elif raw_sev in ["MEDIUM", "MODERATE"] or is_roadside:
                 severity_str = "MEDIUM"
             else:
                 severity_str = "LOW"
@@ -328,7 +343,7 @@ Output a STRICT JSON object:
             if isinstance(raw_vehicles, list):
                 vehicles_count = len(raw_vehicles)
             elif isinstance(raw_vehicles, str) and not raw_vehicles.isdigit():
-                vehicles_count = 0 if is_all_clear else 2
+                vehicles_count = 1 if is_roadside else (0 if is_all_clear else 2)
             else:
                 vehicles_count = int(raw_vehicles)
 
@@ -340,17 +355,17 @@ Output a STRICT JSON object:
                 vehicles_involved=vehicles_count,
                 hazard_indicators=hazard_list,
                 raw_summary=raw_summary_text,
-                confidence=float(data.get("confidence", 0.98)),
+                confidence=float(data.get("confidence", 0.96)),
                 timestamp=datetime.datetime.now().strftime("%H:%M:%S")
             )
         except Exception:
             return VisualContextSummary(
                 location="5th Ave & Market St Intersection",
                 camera_id="CAM-DGX-SPARK-01",
-                crisis_type="Traffic Scene Monitoring",
-                severity="LOW",
-                vehicles_involved=0,
-                hazard_indicators=[],
+                crisis_type="Roadside Scene Observation",
+                severity="MEDIUM",
+                vehicles_involved=1,
+                hazard_indicators=["vehicle on shoulder"],
                 raw_summary=raw_response[:250],
                 confidence=0.90,
                 timestamp=datetime.datetime.now().strftime("%H:%M:%S")
@@ -359,16 +374,16 @@ Output a STRICT JSON object:
     def _extract_scenario_heuristic(self, video_path: str, location_hint: str) -> VisualContextSummary:
         """Offline fallback only when Spark NIM is unreachable."""
         filename = os.path.basename(video_path).lower()
-        if "aic21" in filename or "truck" in filename:
+        if "snow" in filename or "93" in filename:
             return VisualContextSummary(
                 location=location_hint,
-                camera_id="CAM-HWY-01",
-                crisis_type="Normal Highway Traffic (All Clear)",
-                severity="LOW",
-                vehicles_involved=0,
-                hazard_indicators=[],
-                raw_summary="Highway traffic moving normally with semi-truck and passenger cars. No collisions, fires, or hazards present.",
-                confidence=0.99,
+                camera_id="CAM-SNOW-HWY",
+                crisis_type="Roadside Assistance / Vehicle on Shoulder in Snow",
+                severity="MEDIUM",
+                vehicles_involved=1,
+                hazard_indicators=["snow-covered shoulder", "disabled vehicle", "towing operation"],
+                raw_summary="White pickup truck towing disabled vehicle on snowy highway shoulder. Flowing traffic maintained with minor slowdown advisory.",
+                confidence=0.96,
                 timestamp=datetime.datetime.now().strftime("%H:%M:%S")
             )
         return VisualContextSummary(

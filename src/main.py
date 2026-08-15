@@ -28,11 +28,11 @@ def get_severity_colors(severity: str, dispatch_code: str = "") -> Dict[str, str
             "badge": "🔴 CRITICAL - CODE RED",
             "icon": "🚨"
         }
-    elif "AMBER" in code_upper or sev_upper in ["HIGH", "MEDIUM"]:
+    elif "AMBER" in code_upper or sev_upper in ["HIGH", "MEDIUM", "MODERATE"]:
         return {
             "border": "yellow",
             "title_style": "bold yellow",
-            "badge": "🟡 HIGH - CODE AMBER",
+            "badge": "🟡 CAUTION / SAFETY - CODE AMBER",
             "icon": "⚠️"
         }
     else:
@@ -58,7 +58,7 @@ def print_rich_incident_report(record: Dict[str, Any]):
         # Header banner
         header_text = Text()
         header_text.append(f"Omni-Responder: {colors['badge']}\n", style=colors["title_style"])
-        header_text.append(f"Incident: {perception.get('crisis_type', 'N/A')} | Location: {perception.get('location', 'N/A')}\n", style="white")
+        header_text.append(f"Scene: {perception.get('crisis_type', 'N/A')} | Location: {perception.get('location', 'N/A')}\n", style="white")
         header_text.append(f"Platform: {record['platform']['hardware']} | {record['platform']['privacy_guarantee']}", style="dim")
         console.print(Panel(header_text, style=colors["border"], border_style=colors["border"]))
 
@@ -102,7 +102,6 @@ def print_rich_incident_report(record: Dict[str, Any]):
         console.print(f"\n{colors['icon']} [bold green]Autonomous Edge Processing Complete.[/bold green] Video preserved on-node (0 bytes sent to cloud).\n")
 
     else:
-        # Plain text fallback
         print("\n" + "="*70)
         print(f"  OMNI-RESPONDER: {colors['badge']}")
         print("="*70)
@@ -138,7 +137,6 @@ def run_live_stream_simulation(video_path: str, location: str, speed: float):
         status = event.get("status", "NORMAL_MONITORING")
         ts = event.get("timestamp", "00:00")
         desc = event.get("scene_description", "")
-        sev = event.get("severity", "LOW")
 
         if status == "ANOMALY_DETECTED":
             prefix = f"\033[1;33m[{ts}] [⚠️ ANOMALY DETECTED]\033[0m"
@@ -147,6 +145,13 @@ def run_live_stream_simulation(video_path: str, location: str, speed: float):
             prefix = f"\033[1;31m[{ts}] [🚨 CRISIS IMPACT DETECTED!]\033[0m"
             print(f"\n{prefix} {desc}")
             print("\033[1;36m⚡ DGX Spark Nemotron Orchestrator: Triggering sub-agents in parallel (< 150ms latency)...\033[0m")
+            record = event.get("incident_record")
+            if record:
+                print_rich_incident_report(record)
+        elif status == "ROADSIDE_ASSISTANCE":
+            prefix = f"\033[1;33m[{ts}] [🟡 ROADSIDE SAFETY ADVISORY ACTIVE]\033[0m"
+            print(f"\n{prefix} {desc}")
+            print("\033[1;33m⚡ DGX Spark Nemotron Orchestrator: Roadway safety advisory triggered.\033[0m")
             record = event.get("incident_record")
             if record:
                 print_rich_incident_report(record)
