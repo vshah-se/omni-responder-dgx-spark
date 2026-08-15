@@ -40,6 +40,12 @@ class StreamFrameEvent:
 class VSSPerceptionPipeline:
     """Unbiased Vision Pipeline: Pure Pixel Differencing -> Cosmos Reasoner VLM Reasoning."""
 
+    # Tunable Hyperparameters for Hierarchical Motion Scanner
+    COARSE_SEARCH_MAX_SAMPLES = 20
+    COARSE_SEARCH_MIN_INTERVAL_SEC = 4.0
+    FINE_SEARCH_RESOLUTION_SEC = 1.0
+
+
     STAGE2_DEEP_PROMPT = """You are an objective Edge Surveillance Vision Reasoner on NVIDIA DGX Spark.
 Analyze this high-definition sequence of frames captured directly from an edge roadway surveillance camera.
 
@@ -140,37 +146,69 @@ Output ONLY a STRICT JSON object with these exact keys:
         return None
 
     def scan_motion_and_anomaly_points(self, video_path: str) -> Tuple[bool, float, str]:
-        """Computes true mathematical pixel delta across video timeline to locate exact anomaly moment."""
+        """Hierarchical (Coarse-to-Fine) pixel differencing to locate exact anomaly moment rapidly."""
         import sys
         duration = self.get_video_duration(video_path)
         
-        # Sample every 1 second to precisely isolate the moment of impact
-        num_samples = max(8, int(duration / 1.0))
-        sample_times = [round((i + 0.5) * (duration / num_samples), 2) for i in range(num_samples)]
+        # --- PHASE 1: COARSE SEARCH ---
+        coarse_interval = max(self.COARSE_SEARCH_MIN_INTERVAL_SEC, duration / self.COARSE_SEARCH_MAX_SAMPLES)
+        num_coarse = max(2, int(duration / coarse_interval))
+        coarse_times = [round((i + 0.5) * coarse_interval, 2) for i in range(num_coarse)]
         
-        thumbnails: List[Tuple[float, bytes]] = []
-        for i, t in enumerate(sample_times):
-            sys.stdout.write(f"\r\033[K[Motion Scanner] Analyzing timeline: {i+1}/{num_samples} frames (T={t:.1f}s)...")
+        coarse_thumbnails: List[Tuple[float, bytes]] = []
+        for i, t in enumerate(coarse_times):
+            sys.stdout.write(f"\r\033[K[Motion Scanner] Coarse Search: {i+1}/{num_coarse} frames (T={t:.1f}s)...")
             sys.stdout.flush()
             raw = self.extract_raw_grayscale_thumbnail(video_path, t)
             if raw:
-                thumbnails.append((t, raw))
-        
-        sys.stdout.write("\r\033[K")
-        sys.stdout.flush()
-
-        if len(thumbnails) < 2:
+                coarse_thumbnails.append((t, raw))
+                
+        if len(coarse_thumbnails) < 2:
+            sys.stdout.write("\r\033[K")
+            sys.stdout.flush()
             return False, duration * 0.5, "Standard traffic flow"
 
-        deltas = []
-        for i in range(1, len(thumbnails)):
-            t_curr, bytes_curr = thumbnails[i]
-            _, bytes_prev = thumbnails[i - 1]
+        coarse_deltas = []
+        for i in range(1, len(coarse_thumbnails)):
+            t_curr, bytes_curr = coarse_thumbnails[i]
+            t_prev, bytes_prev = coarse_thumbnails[i - 1]
             diff = sum(abs(b1 - b2) for b1, b2 in zip(bytes_curr, bytes_prev)) / len(bytes_curr)
-            deltas.append((t_curr, diff))
+            coarse_deltas.append((t_prev, t_curr, diff))
 
-        max_t, max_diff = max(deltas, key=lambda x: x[1])
-        avg_diff = sum(d[1] for d in deltas) / len(deltas)
+        # Find the window with the highest variance
+        best_prev, best_curr, best_coarse_diff = max(coarse_deltas, key=lambda x: x[2])
+        
+        # --- PHASE 2: FINE SEARCH ---
+        fine_window_duration = best_curr - best_prev
+        num_fine = max(3, int(fine_window_duration / self.FINE_SEARCH_RESOLUTION_SEC))
+        fine_times = [round(best_prev + (i + 0.5) * (fine_window_duration / num_fine), 2) for i in range(num_fine)]
+        
+        fine_thumbnails = []
+        for i, t in enumerate(fine_times):
+            sys.stdout.write(f"\r\033[K[Motion Scanner] Fine Search (Window {best_prev:.1f}s-{best_curr:.1f}s): {i+1}/{num_fine} frames (T={t:.1f}s)...")
+            sys.stdout.flush()
+            raw = self.extract_raw_grayscale_thumbnail(video_path, t)
+            if raw:
+                fine_thumbnails.append((t, raw))
+                
+        sys.stdout.write("\r\033[K")
+        sys.stdout.flush()
+        
+        if len(fine_thumbnails) < 2:
+            return False, best_curr, "Continuous traffic flow"
+            
+        fine_deltas = []
+        for i in range(1, len(fine_thumbnails)):
+            t_curr, bytes_curr = fine_thumbnails[i]
+            _, bytes_prev = fine_thumbnails[i - 1]
+            diff = sum(abs(b1 - b2) for b1, b2 in zip(bytes_curr, bytes_prev)) / len(bytes_curr)
+            fine_deltas.append((t_curr, diff))
+
+        max_t, max_diff = max(fine_deltas, key=lambda x: x[1])
+        
+        # Calculate baseline from coarse search (excluding the anomalous window) to prevent skewing
+        baseline_diffs = [d[2] for d in coarse_deltas if d[2] != best_coarse_diff]
+        avg_diff = sum(baseline_diffs) / len(baseline_diffs) if baseline_diffs else best_coarse_diff
 
         if max_diff > (avg_diff * 1.25) and max_diff > 8.0:
             return True, max_t, f"Pixel motion variance spike detected (Δ={max_diff:.1f})"
