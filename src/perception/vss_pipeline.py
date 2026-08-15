@@ -16,7 +16,7 @@ class VisualContextSummary:
     location: str
     camera_id: str = "CAM-DGX-SPARK-01"
     crisis_type: str = "Physical Emergency Incident"
-    severity: str = "HIGH"  # "CRITICAL", "HIGH", "MEDIUM", "LOW"
+    severity: str = "LOW"  # "CRITICAL", "HIGH", "MEDIUM", "LOW"
     vehicles_involved: int = 0
     hazard_indicators: List[str] = field(default_factory=list)
     raw_summary: str = ""
@@ -41,7 +41,8 @@ class VSSPerceptionPipeline:
 
     SYSTEM_PROMPT = """You are an autonomous Emergency Incident Vision Agent running locally on NVIDIA DGX Spark.
 Analyze the video scene frames. Describe the physical incident, vehicles involved, hazards (fluids, fire, smoke, damage), and severity.
-Output a valid JSON object with keys: location, camera_id, crisis_type, severity, vehicles_involved, hazard_indicators, raw_summary, confidence."""
+Output a valid JSON object with keys: location, camera_id, crisis_type, severity, vehicles_involved, hazard_indicators, raw_summary, confidence.
+If there are no accidents or immediate hazards, set severity to "LOW" or "MEDIUM" and hazard_indicators to []."""
 
     def __init__(self, endpoint_url: Optional[str] = None, model_name: Optional[str] = None):
         self.endpoint_url = endpoint_url or os.getenv("COSMOS_VLM_URL", "http://localhost:30082/v1")
@@ -75,7 +76,7 @@ Output a valid JSON object with keys: location, camera_id, crisis_type, severity
             out = subprocess.check_output(cmd, timeout=5).decode().strip()
             return float(out)
         except Exception:
-            return 15.0  # Safe default if ffprobe not available
+            return 15.0
 
     def extract_keyframes_base64(self, video_path: str, max_frames: int = 2) -> List[str]:
         """Extracts JPEG keyframes from video using ffmpeg."""
@@ -166,14 +167,14 @@ Output a valid JSON object with keys: location, camera_id, crisis_type, severity
         start_time = time.time()
         video_duration = self.get_video_duration(video_path)
 
-        # 1. Ingest camera stream connection with real live timestamp
+        # 1. Ingest camera stream connection
         live_ts = datetime.datetime.now().strftime("%H:%M:%S")
         yield StreamFrameEvent(
             timestamp=live_ts,
             elapsed_seconds=0.0,
-            status="ACTIVE_INCIDENT_INGESTION",
-            severity="HIGH",
-            scene_description=f"Camera feed connected at {location_hint} ({video_duration:.1f}s stream). Running Cosmos VLM...",
+            status="ACTIVE_STREAM_INGESTION",
+            severity="NORMAL",
+            scene_description=f"Camera feed connected at {location_hint} ({video_duration:.1f}s stream). Scanning scene with Cosmos VLM...",
             visual_summary=None
         )
 
@@ -182,14 +183,16 @@ Output a valid JSON object with keys: location, camera_id, crisis_type, severity
         elapsed = time.time() - start_time
         summary.timestamp = datetime.datetime.now().strftime("%H:%M:%S")
 
-        # 3. Yield detection event with exact live time and elapsed latency
+        # 3. Determine event status based on severity
+        status_label = "CRISIS_IMPACT" if summary.severity in ["CRITICAL", "HIGH"] else "ROUTINE_SCENE_MONITORED"
         live_ts = datetime.datetime.now().strftime("%H:%M:%S")
+
         yield StreamFrameEvent(
             timestamp=live_ts,
             elapsed_seconds=round(elapsed, 2),
-            status="CRISIS_IMPACT",
+            status=status_label,
             severity=summary.severity,
-            scene_description=f"Cosmos VLM Edge Detection in {elapsed:.2f}s: {summary.raw_summary}",
+            scene_description=f"Cosmos VLM Edge Analysis ({elapsed:.2f}s): {summary.raw_summary}",
             visual_summary=summary
         )
 
@@ -213,18 +216,32 @@ Output a valid JSON object with keys: location, camera_id, crisis_type, severity
             else:
                 vehicles_count = int(raw_vehicles)
 
-            severity_str = str(data.get("severity", "HIGH")).upper()
-            if severity_str in ["SEVERE", "CRITICAL"]:
+            raw_sev = str(data.get("severity", "LOW")).upper()
+            raw_summary_text = data.get("raw_summary", raw_response[:250])
+            hazard_list = list(data.get("hazard_indicators", []))
+
+            # Smart severity classification if the text says "no accidents / normal congestion"
+            if any(phrase in raw_summary_text.lower() for phrase in ["no accidents", "no immediate hazards", "typical urban traffic", "no visible signs of accidents", "traffic congestion"]):
+                if not hazard_list:
+                    raw_sev = "MEDIUM" if "congestion" in raw_summary_text.lower() else "LOW"
+
+            if raw_sev in ["SEVERE", "CRITICAL"]:
                 severity_str = "CRITICAL"
+            elif raw_sev in ["HIGH"]:
+                severity_str = "HIGH"
+            elif raw_sev in ["MEDIUM", "MODERATE"]:
+                severity_str = "MEDIUM"
+            else:
+                severity_str = "LOW"
 
             return VisualContextSummary(
                 location=data.get("location", "5th Ave & Market St Intersection"),
                 camera_id=str(data.get("camera_id", "CAM-DGX-SPARK-01")),
-                crisis_type=data.get("crisis_type", "Active Collision Scene"),
+                crisis_type=data.get("crisis_type", "Traffic Flow Observation"),
                 severity=severity_str,
                 vehicles_involved=vehicles_count,
-                hazard_indicators=list(data.get("hazard_indicators", [])),
-                raw_summary=data.get("raw_summary", raw_response[:250]),
+                hazard_indicators=hazard_list,
+                raw_summary=raw_summary_text,
                 confidence=float(data.get("confidence", 0.95)),
                 timestamp=datetime.datetime.now().strftime("%H:%M:%S")
             )
@@ -232,12 +249,12 @@ Output a valid JSON object with keys: location, camera_id, crisis_type, severity
             return VisualContextSummary(
                 location="5th Ave & Market St Intersection",
                 camera_id="CAM-DGX-SPARK-01",
-                crisis_type="Active Traffic Incident",
-                severity="HIGH",
-                vehicles_involved=2,
-                hazard_indicators=["vehicle wreckage", "blocked roadway"],
+                crisis_type="Traffic Scene Observation",
+                severity="LOW",
+                vehicles_involved=1,
+                hazard_indicators=[],
                 raw_summary=raw_response,
-                confidence=0.95,
+                confidence=0.90,
                 timestamp=datetime.datetime.now().strftime("%H:%M:%S")
             )
 

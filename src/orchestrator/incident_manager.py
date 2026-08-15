@@ -26,12 +26,16 @@ class IncidentOrchestrator:
             visual_summary = self.perception.process_video_file(video_input, location_hint=location_hint)
 
         # 2. Hazmat Sub-Agent (Local ERG 2024 Knowledge Base Lookup)
-        hazmat_result = self.hazmat_agent.analyze_hazard(visual_summary.hazard_indicators)
+        hazmat_result = self.hazmat_agent.analyze_hazard(
+            visual_indicators=visual_summary.hazard_indicators,
+            severity=visual_summary.severity
+        )
 
         # 3. Traffic Sub-Agent (Digital Message Signs & Perimeter Isolation)
         traffic_result = self.traffic_agent.dispatch_reroute(
             location=visual_summary.location,
-            isolation_radius_meters=hazmat_result.get("isolation_radius_meters", 100)
+            isolation_radius_meters=hazmat_result.get("isolation_radius_meters", 0),
+            severity=visual_summary.severity
         )
 
         # 4. Comms Sub-Agent (911 CAD Dispatch Briefing Synthesis)
@@ -63,10 +67,9 @@ class IncidentOrchestrator:
         location_hint: str = "5th Ave & Market St Intersection",
         speed_multiplier: float = 1.0
     ) -> Generator[Dict[str, Any], None, None]:
-        """Streams live temporal edge monitoring from normal flow to autonomous multi-agent crisis response."""
+        """Streams real-time edge monitoring with live wall-clock timestamps and real video duration."""
         for event in self.perception.stream_video_feed(video_path, location_hint=location_hint, speed_multiplier=speed_multiplier):
             if event.status == "CRISIS_IMPACT" and event.visual_summary:
-                # Trigger full parallel multi-agent dispatch
                 full_dispatch = self.process_incident(event.visual_summary, location_hint=location_hint)
                 yield {
                     "event_type": "CRISIS_DISPATCH_TRIGGERED",
