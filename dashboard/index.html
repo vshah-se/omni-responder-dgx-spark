@@ -1,0 +1,729 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Omni-Responder — Emergency Operations</title>
+<style>
+/* Palette derives from the ERG 2024 guidebook's own colour system — orange guide
+   pages, green protective-action distances, yellow index — over control-room slate.
+   No webfonts, no map tiles, no CDN: the zero-egress claim has to survive inspection. */
+:root{
+  /* Palette still derives from ERG 2024's own colour system — orange guide pages,
+     green protective-action distances, yellow index — but contrast is lifted so it
+     survives a projector. Dark is the default; light is a full re-tone, not an invert. */
+  --bg:#0C121A; --panel:#151E29; --panel-2:#101823; --line:#243342; --line-hi:#384C60;
+  --ink:#DDE7F0; --ink-hi:#FFFFFF; --dim:#93A7BC; --dimmer:#6E8497;
+  --hazard:#FF7A33;
+  --protect:#3FC47E;
+  --caution:#F5C64A;
+  --critical:#FF5C47;
+  --verified:#9BDB2B;
+  --shade:rgba(6,10,15,.94);
+  --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+  --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+}
+[data-theme="light"]{
+  /* Cool blueprint paper rather than cream — an ops board, not a document. Hazard
+     hues are darkened to hold contrast on a light field. */
+  --bg:#DCE3EB; --panel:#FBFCFD; --panel-2:#EEF2F6; --line:#C3D0DC; --line-hi:#9DAEBF;
+  --ink:#16232F; --ink-hi:#000000; --dim:#4E6376; --dimmer:#6B7F92;
+  --hazard:#C0450A;
+  --protect:#12723F;
+  --caution:#8F6706;
+  --critical:#B01B0E;
+  --verified:#4C7A00;
+  --shade:rgba(251,252,253,.94);
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0; transition:background .25s,color .25s; background:var(--bg); color:var(--ink);
+  font-family:var(--sans); font-size:14px; line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+}
+:focus-visible{outline:2px solid var(--caution); outline-offset:2px}
+
+/* ---------- structure ---------- */
+.shell{display:flex; flex-direction:column; height:100vh; gap:1px; background:var(--line)}
+header{
+  display:flex; align-items:center; gap:20px; padding:11px 18px;
+  background:var(--panel-2); flex-shrink:0;
+}
+.wordmark{font-weight:700; letter-spacing:.2em; font-size:13px; text-transform:uppercase; color:var(--ink-hi)}
+.wordmark span{color:var(--hazard)}
+.sep{width:1px; height:22px; background:var(--line-hi)}
+
+.clock{font-family:var(--mono); display:flex; align-items:baseline; gap:9px}
+.clock b{font-size:25px; font-weight:600; letter-spacing:.03em; color:var(--ink-hi); font-variant-numeric:tabular-nums}
+.clock small{font-size:10px; letter-spacing:.13em; text-transform:uppercase; color:var(--dim)}
+
+.status{
+  font-family:var(--mono); font-size:11px; letter-spacing:.1em; text-transform:uppercase;
+  padding:5px 10px; border:1px solid var(--line-hi); color:var(--dim); border-radius:2px;
+}
+.status.on{color:var(--verified); border-color:color-mix(in srgb,var(--verified) 45%,transparent)}
+.status .dot{display:inline-block; width:5px; height:5px; border-radius:50%; background:currentColor; margin-right:7px; vertical-align:middle}
+.spacer{flex:1}
+button.tog{
+  background:none; font-family:var(--mono); cursor:pointer;
+  display:inline-flex; align-items:center; gap:6px;
+}
+button.tog:hover{color:var(--ink-hi); border-color:var(--line-hi)}
+
+/* ---------- orchestration strip ----------
+   The ledger shows what happened in sequence; this shows who is working right now.
+   Reads as a mission-control status board: state, current task, cumulative load. */
+.agents{display:flex; gap:1px; background:var(--line); flex-shrink:0}
+.agent{
+  flex:1; min-width:0; background:var(--panel-2); padding:9px 13px 10px;
+  border-top:2px solid var(--line-hi); transition:border-color .3s, background .3s;
+  position:relative; overflow:hidden;
+}
+.agent .role{
+  font-family:var(--mono); font-size:10px; letter-spacing:.13em; text-transform:uppercase;
+  color:var(--dim); margin-bottom:6px;
+}
+.agent .name{
+  font-family:var(--mono); font-size:12.5px; font-weight:600; color:var(--ink);
+  display:flex; align-items:center; gap:7px; margin-bottom:4px;
+}
+.agent .name .led{width:6px; height:6px; border-radius:50%; background:var(--dimmer); flex-shrink:0}
+.agent .task{
+  font-size:12px; color:var(--dim); white-space:nowrap; overflow:hidden;
+  text-overflow:ellipsis; min-height:16px;
+}
+.agent .load{
+  font-family:var(--mono); font-size:10.5px; color:var(--dim); margin-top:5px;
+  letter-spacing:.04em;
+}
+/* the three sub-agents sit under the orchestrator — bracket them visually */
+.agent.sub::before{
+  content:""; position:absolute; left:0; top:0; bottom:0; width:2px; background:var(--line-hi);
+}
+.agent[data-state="active"]{border-top-color:var(--caution); background:var(--panel)}
+.agent[data-state="active"] .led{background:var(--caution); animation:pulse 1s ease-in-out infinite}
+.agent[data-state="active"] .name{color:var(--ink-hi)}
+.agent[data-state="active"] .task{color:var(--caution)}
+.agent[data-state="ok"]{border-top-color:var(--protect)}
+.agent[data-state="ok"] .led{background:var(--protect)}
+.agent[data-state="ok"] .task{color:var(--ink)}
+.agent[data-state="error"]{border-top-color:var(--critical)}
+.agent[data-state="error"] .led{background:var(--critical)}
+.agent[data-state="error"] .task{color:var(--critical)}
+.agent[data-state="hot"]{border-top-color:var(--hazard)}
+.agent[data-state="hot"] .led{background:var(--hazard); animation:pulse 1.4s ease-in-out infinite}
+.agent[data-state="hot"] .task{color:var(--hazard)}
+@keyframes pulse{0%,100%{opacity:1} 50%{opacity:.25}}
+.agent .sweep{
+  position:absolute; left:0; bottom:0; height:2px; width:0;
+  background:var(--caution); opacity:.75;
+}
+.agent[data-state="active"] .sweep{animation:fill var(--dur,900ms) linear forwards}
+@keyframes fill{from{width:0} to{width:100%}}
+
+.grid{flex:1; display:grid; grid-template-columns:minmax(0,1.15fr) minmax(0,1fr) 310px;
+      grid-template-rows:minmax(0,1fr) minmax(0,.95fr); gap:1px; min-height:0}
+.pane{background:var(--panel); display:flex; flex-direction:column; min-height:0; min-width:0}
+#pane-video{grid-column:1; grid-row:1}
+#pane-map{grid-column:2; grid-row:1}
+#pane-rail{grid-column:3; grid-row:1/3; overflow-y:auto}
+#pane-log{grid-column:1/3; grid-row:2}
+
+.pane-hd{
+  display:flex; align-items:center; gap:9px; padding:8px 13px;
+  border-bottom:1px solid var(--line); flex-shrink:0;
+  font-family:var(--mono); font-size:11px; letter-spacing:.13em; text-transform:uppercase; color:var(--dim);
+}
+.pane-hd .tag{margin-left:auto; color:var(--dimmer); letter-spacing:.1em}
+.pane-bd{flex:1; min-height:0; position:relative}
+
+/* ---------- video ---------- */
+.stage{position:absolute; inset:0; background:var(--panel-2); display:flex; align-items:center; justify-content:center; overflow:hidden}
+.stage video{width:100%; height:100%; object-fit:contain}
+.stage .void{text-align:center; padding:26px; max-width:330px}
+.stage .void p{font-family:var(--mono); font-size:12px; color:var(--dim); letter-spacing:.06em; margin:0 0 7px}
+.stage .void code{color:var(--caution); font-size:11px}
+.boxes{position:absolute; inset:0; pointer-events:none}
+.readout{
+  position:absolute; left:0; right:0; bottom:0; padding:11px 13px;
+  background:linear-gradient(transparent,var(--shade) 42%);
+  display:flex; flex-direction:column; gap:6px;
+}
+.readout .line1{display:flex; align-items:center; gap:9px; flex-wrap:wrap}
+.chip{font-family:var(--mono); font-size:10.5px; letter-spacing:.1em; text-transform:uppercase;
+      padding:2.5px 7px; border-radius:2px; border:1px solid currentColor}
+.chip.sev0{color:var(--dim)} .chip.sev1{color:var(--protect)}
+.chip.sev2{color:var(--caution)} .chip.sev3{color:var(--critical)}
+.readout .desc{font-size:14.5px; color:var(--ink-hi); line-height:1.4}
+.readout .meta{font-family:var(--mono); font-size:11.5px; color:var(--dim); display:flex; gap:16px; flex-wrap:wrap}
+
+/* ---------- map ---------- */
+#map{position:absolute; inset:0; width:100%; height:100%}
+.legend{
+  position:absolute; left:12px; bottom:11px; display:flex; flex-direction:column; gap:4px;
+  font-family:var(--mono); font-size:10.5px; letter-spacing:.08em; text-transform:uppercase; color:var(--dim);
+}
+.legend i{display:inline-block; width:16px; height:2px; margin-right:7px; vertical-align:middle}
+
+/* ---------- ledger (signature element) ---------- */
+#ledger{position:absolute; inset:0; overflow-y:auto; padding:2px 0}
+.entry{display:grid; grid-template-columns:58px 3px 1fr; gap:0; border-bottom:1px solid var(--panel-2)}
+.entry:hover{background:var(--panel-2)}
+.entry .t{
+  font-family:var(--mono); font-size:11.5px; color:var(--dim); padding:11px 11px 11px 14px;
+  text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap;
+}
+.entry .bar{background:var(--line)}
+.entry .body{padding:10px 16px 11px 13px; min-width:0}
+.entry .who{
+  font-family:var(--mono); font-size:10.5px; letter-spacing:.11em; text-transform:uppercase;
+  color:var(--dim); margin-bottom:4px; display:flex; gap:9px; align-items:baseline; flex-wrap:wrap;
+}
+.entry .who b{font-weight:600}
+.entry .who .ms{color:var(--dimmer); letter-spacing:.05em}
+.entry .txt{font-size:13.5px; color:var(--ink)}
+.entry .txt em{font-style:normal; color:var(--ink-hi)}
+.entry .args{font-family:var(--mono); font-size:11.5px; color:var(--dim); margin-top:3px; word-break:break-word}
+.entry[data-k="perception"] .bar{background:var(--hazard)}
+.entry[data-k="perception"] .who b{color:var(--hazard)}
+.entry[data-k="reasoning"]  .bar{background:var(--caution)}
+.entry[data-k="reasoning"]  .who b{color:var(--caution)}
+.entry[data-k="tool_call"]  .bar{background:var(--protect)}
+.entry[data-k="tool_call"]  .who b{color:var(--protect)}
+.entry[data-k="dispatch"]   .bar{background:var(--critical)}
+.entry[data-k="dispatch"]   .who b{color:var(--critical)}
+.entry[data-err="1"] .bar{background:var(--critical)}
+.entry[data-err="1"] .txt{color:var(--critical)}
+.entry.fresh{animation:sweep .5s ease-out}
+@keyframes sweep{from{background:color-mix(in srgb,var(--caution) 11%,transparent); transform:translateX(-3px)} to{background:transparent; transform:none}}
+
+/* ---------- right rail ---------- */
+.card{border-bottom:1px solid var(--line); padding:12px 14px}
+.card h3{
+  font-family:var(--mono); font-size:10.5px; letter-spacing:.13em; text-transform:uppercase;
+  color:var(--dim); margin:0 0 10px; font-weight:600;
+}
+.kv{display:flex; justify-content:space-between; gap:12px; padding:4.5px 0; font-family:var(--mono); font-size:12px}
+.kv span{color:var(--dim)} .kv b{color:var(--ink-hi); font-weight:500; text-align:right}
+.guide{display:flex; align-items:center; gap:11px; margin-bottom:9px}
+.guide .num{
+  font-family:var(--mono); font-size:26px; font-weight:700; color:var(--bg);
+  background:var(--hazard); padding:3px 11px; border-radius:2px; letter-spacing:.02em;
+}
+.guide .mat{font-size:14px; color:var(--ink-hi); font-weight:600}
+.guide .mat small{display:block; font-family:var(--mono); font-size:10.5px; letter-spacing:.11em;
+                  text-transform:uppercase; color:var(--dim); font-weight:400; margin-top:1px}
+.dispatch{border-left:2px solid var(--critical); padding:8px 0 8px 11px; margin-bottom:10px}
+.dispatch .hd{display:flex; align-items:center; gap:8px; margin-bottom:5px}
+.dispatch .ch{font-family:var(--mono); font-size:10.5px; letter-spacing:.11em; text-transform:uppercase; color:var(--critical)}
+.dispatch .ack{margin-left:auto; font-family:var(--mono); font-size:10px; letter-spacing:.09em;
+               text-transform:uppercase; color:var(--dimmer)}
+.dispatch .ack.yes{color:var(--protect)}
+.dispatch .to{font-family:var(--mono); font-size:11.5px; color:var(--dim); margin-bottom:4px}
+.dispatch .brief{font-size:13px; color:var(--ink)}
+.bar-track{height:3px; background:var(--panel-2); border-radius:2px; overflow:hidden; margin-top:5px}
+.bar-fill{height:100%; background:var(--protect); transition:width .45s ease}
+.bar-fill.hot{background:var(--caution)}
+.empty{font-family:var(--mono); font-size:12px; color:var(--dim); letter-spacing:.05em}
+
+::-webkit-scrollbar{width:9px}
+::-webkit-scrollbar-track{background:var(--panel-2)}
+::-webkit-scrollbar-thumb{background:var(--line-hi); border-radius:5px}
+
+@media (max-width:1100px){
+  .grid{grid-template-columns:1fr; grid-template-rows:auto auto auto auto}
+  #pane-video,#pane-map,#pane-log,#pane-rail{grid-column:1; grid-row:auto}
+  .pane-bd{min-height:270px}
+}
+@media (prefers-reduced-motion:reduce){*{animation:none !important; transition:none !important}}
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <header>
+    <div class="wordmark">Omni<span>·</span>Responder</div>
+    <div class="sep"></div>
+    <div class="clock"><b id="clk">00:00.0</b><small>incident elapsed</small></div>
+    <div class="spacer"></div>
+    <div class="status" id="egress"><i class="dot"></i>Video egress —</div>
+    <div class="status on"><i class="dot"></i>DGX Spark · on premise</div>
+    <button class="status tog" id="theme" type="button" aria-label="Switch colour theme">
+      <span id="themeIcon">◐</span> <span id="themeLbl">Light</span></button>
+    <div class="status" id="link"><i class="dot"></i>Bus offline</div>
+  </header>
+
+  <div class="agents" id="agents"></div>
+
+  <div class="grid">
+
+    <section class="pane" id="pane-video">
+      <div class="pane-hd">Camera feed <span class="tag" id="cam">no stream</span></div>
+      <div class="pane-bd"><div class="stage">
+        <video id="vid" muted playsinline preload="auto"><source src="clips/tanker.mp4" type="video/mp4"></video>
+        <div class="void" id="void">
+          <p>No clip mounted</p>
+          <p style="color:var(--dimmer)">Drop your incident clip at<br><code>dashboard/clips/tanker.mp4</code><br>and reload. The pipeline runs without it.</p>
+        </div>
+        <svg class="boxes" id="boxes" viewBox="0 0 100 100" preserveAspectRatio="none"></svg>
+        <div class="readout" id="readout" hidden>
+          <div class="line1">
+            <span class="chip sev0" id="sev">standby</span>
+            <span class="chip" id="itype" style="color:var(--dim)">—</span>
+            <span class="chip" id="placard" hidden style="color:var(--hazard)">—</span>
+          </div>
+          <div class="desc" id="desc"></div>
+          <div class="meta" id="vmeta"></div>
+        </div>
+      </div></div>
+    </section>
+
+    <section class="pane" id="pane-map">
+      <div class="pane-hd">Incident geometry <span class="tag" id="maptag">awaiting fix</span></div>
+      <div class="pane-bd">
+        <svg id="map" viewBox="0 0 560 560" preserveAspectRatio="xMidYMid meet"></svg>
+        <div class="legend">
+          <div><i style="background:var(--critical)"></i>Isolation · hot zone</div>
+          <div><i style="background:var(--protect)"></i>Downwind protective action</div>
+          <div><i style="background:var(--caution)"></i>Detour</div>
+        </div>
+      </div>
+    </section>
+
+    <aside class="pane" id="pane-rail">
+      <div class="card" id="c-erg">
+        <h3>ERG 2024</h3>
+        <div class="empty" id="erg-empty">No material identified</div>
+        <div id="erg-body" hidden>
+          <div class="guide"><div class="num" id="erg-guide">—</div>
+            <div class="mat"><span id="erg-mat">—</span><small id="erg-un">—</small></div></div>
+          <div class="kv"><span>Isolate all directions</span><b id="erg-iso">—</b></div>
+          <div class="kv"><span>Protect downwind · day</span><b id="erg-day">—</b></div>
+          <div class="kv"><span>Protect downwind · night</span><b id="erg-night">—</b></div>
+          <div class="kv"><span>Entry PPE</span><b id="erg-ppe">—</b></div>
+          <div class="kv" id="erg-noterow" hidden><span>Note</span><b id="erg-note" style="max-width:170px">—</b></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Dispatched</h3>
+        <div class="empty" id="disp-empty">Nothing dispatched</div>
+        <div id="disp-list"></div>
+      </div>
+
+      <div class="card">
+        <h3>Spark telemetry</h3>
+        <div class="kv"><span>Unified memory</span><b id="tm-mem">—</b></div>
+        <div class="bar-track"><div class="bar-fill" id="tm-membar" style="width:0"></div></div>
+        <div class="kv" style="margin-top:8px"><span>GPU utilisation</span><b id="tm-gpu">—</b></div>
+        <div class="bar-track"><div class="bar-fill" id="tm-gpubar" style="width:0"></div></div>
+        <div class="kv" style="margin-top:10px"><span>Streams active</span><b id="tm-str">—</b></div>
+        <div class="kv"><span>VLM calls</span><b id="tm-vlm">—</b></div>
+        <div class="kv"><span>Video bytes to cloud</span><b id="tm-eg" style="color:var(--verified)">—</b></div>
+      </div>
+    </aside>
+
+    <section class="pane" id="pane-log">
+      <div class="pane-hd">Decision ledger <span class="tag" id="logcount">0 entries</span></div>
+      <div class="pane-bd"><div id="ledger"></div></div>
+    </section>
+
+  </div>
+</div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const SVGNS = "http://www.w3.org/2000/svg";
+
+/* ---------- incident clock ---------- */
+let clockT = 0, running = false;
+function tick(){ if(running){ clockT += 0.1;
+  const m=String(Math.floor(clockT/60)).padStart(2,"0"), s=(clockT%60).toFixed(1).padStart(4,"0");
+  $("clk").textContent = `${m}:${s}`; } }
+setInterval(tick,100);
+
+/* ---------- world state ---------- */
+const W = { incident:null, zones:null, route:null, wind:null, dispatches:[], count:0 };
+
+/* ---------- video ---------- */
+const vid = $("vid");
+vid.addEventListener("loadeddata", ()=>{ $("void").style.display="none"; });
+vid.addEventListener("error", ()=>{ vid.style.display="none"; });
+
+function drawBoxes(boxes){
+  const svg=$("boxes"); svg.replaceChildren();
+  if(!Array.isArray(boxes)) return;
+  for(const b of boxes){
+    const [x,y,w,h,label] = b;
+    const r=document.createElementNS(SVGNS,"rect");
+    Object.entries({x:x*100,y:y*100,width:w*100,height:h*100,fill:"none",
+      stroke:"var(--hazard)","stroke-width":.45,"vector-effect":"non-scaling-stroke"})
+      .forEach(([k,v])=>r.setAttribute(k,v));
+    svg.appendChild(r);
+    if(label){ const t=document.createElementNS(SVGNS,"text");
+      t.setAttribute("x",x*100+.6); t.setAttribute("y",y*100-1);
+      t.setAttribute("fill","var(--hazard)"); t.setAttribute("font-size","2.4");
+      t.setAttribute("font-family","var(--mono)"); t.textContent=label; svg.appendChild(t); }
+  }
+}
+
+/* ---------- schematic map ----------
+   Deliberately not a tile map. Tiles are a network call, which would undercut the
+   on-premise claim, and an incident command board is the truer visual reference. */
+function renderMap(){
+  const svg=$("map"); svg.replaceChildren();
+  if(!W.incident){ return; }
+  const {lat,lon} = W.incident;
+  const VB=560, CX=VB/2, CY=VB/2;
+
+  // fit scale to whatever geometry exists
+  let reach = 420;
+  if(W.zones) reach = Math.max(reach, (W.zones.downwind_m||0)*1.35, (W.zones.isolation_m||0)*3);
+  if(W.route) for(const [a,b] of W.route)
+    reach = Math.max(reach, Math.hypot((b-lon)*111320*Math.cos(lat*Math.PI/180),(a-lat)*111320)*1.18);
+  const mpp = reach/(VB/2);
+
+  const P = (la,lo)=>[ CX + (lo-lon)*111320*Math.cos(lat*Math.PI/180)/mpp,
+                       CY - (la-lat)*111320/mpp ];
+  const add=(tag,attrs)=>{ const e=document.createElementNS(SVGNS,tag);
+    for(const k in attrs) e.setAttribute(k,attrs[k]); svg.appendChild(e); return e; };
+
+  // grid
+  for(let g=0; g<=VB; g+=56)
+    { add("line",{x1:g,y1:0,x2:g,y2:VB,stroke:"var(--line)","stroke-width":.5,opacity:.5});
+      add("line",{x1:0,y1:g,x2:VB,y2:g,stroke:"var(--line)","stroke-width":.5,opacity:.5}); }
+  // schematic corridor through the incident
+  add("line",{x1:CX,y1:0,x2:CX,y2:VB,stroke:"var(--line-hi)","stroke-width":13,opacity:.55});
+  add("line",{x1:CX,y1:0,x2:CX,y2:VB,stroke:"var(--dimmer)","stroke-width":.7,
+              "stroke-dasharray":"9 11",opacity:.6});
+  add("line",{x1:0,y1:CY,x2:VB,y2:CY,stroke:"var(--line-hi)","stroke-width":6,opacity:.4});
+
+  // downwind protective wedge — oriented by where the wind is going
+  if(W.zones?.downwind_m && W.wind!=null){
+    const head=(W.wind+180)%360, spread=32, R=W.zones.downwind_m/mpp;
+    const pt=d=>{const r=(d-90)*Math.PI/180; return [CX+R*Math.cos(r), CY+R*Math.sin(r)];};
+    const a=pt(head-spread), b=pt(head+spread);
+    add("path",{d:`M${CX},${CY} L${a[0]},${a[1]} A${R},${R} 0 0,1 ${b[0]},${b[1]} Z`,
+      fill:"var(--protect)","fill-opacity":.12,stroke:"var(--protect)",
+      "stroke-width":1.1,"stroke-dasharray":"6 5"});
+    const lp=pt(head);
+    add("text",{x:lp[0],y:lp[1]-9,fill:"var(--protect)","font-size":12.5,"font-family":"var(--mono)",
+      "text-anchor":"middle"}).textContent = `${W.zones.downwind_m} m downwind`;
+  }
+  // isolation ring
+  if(W.zones?.isolation_m){
+    const r=W.zones.isolation_m/mpp;
+    add("circle",{cx:CX,cy:CY,r,fill:"var(--critical)","fill-opacity":.17,
+      stroke:"var(--critical)","stroke-width":1.4});
+    add("text",{x:CX+r+7,y:CY-5,fill:"var(--critical)","font-size":12,
+      "font-family":"var(--mono)"}).textContent = `${W.zones.isolation_m} m isolate`;
+  }
+  // detour
+  if(W.route?.length){
+    add("polyline",{points:W.route.map(([a,b])=>P(a,b).join(",")).join(" "),fill:"none",
+      stroke:"var(--caution)","stroke-width":2.4,"stroke-dasharray":"9 6",
+      "stroke-linejoin":"round","stroke-linecap":"round",opacity:.9});
+    const [ex,ey]=P(...W.route[0]);
+    add("circle",{cx:ex,cy:ey,r:4,fill:"var(--caution)"});
+  }
+  // ground zero
+  add("circle",{cx:CX,cy:CY,r:6.5,fill:"var(--critical)",stroke:"var(--bg)","stroke-width":2});
+  add("line",{x1:CX-13,y1:CY,x2:CX+13,y2:CY,stroke:"var(--critical)","stroke-width":1.3});
+  add("line",{x1:CX,y1:CY-13,x2:CX,y2:CY+13,stroke:"var(--critical)","stroke-width":1.3});
+
+  // wind arrow
+  if(W.wind!=null){
+    const head=(W.wind+180)%360, r=(head-90)*Math.PI/180, ox=VB-70, oy=52, L=24;
+    add("line",{x1:ox,y1:oy,x2:ox+L*Math.cos(r),y2:oy+L*Math.sin(r),
+      stroke:"var(--protect)","stroke-width":1.6,"marker-end":""});
+    add("circle",{cx:ox,cy:oy,r:2.6,fill:"var(--protect)"});
+    add("text",{x:ox,y:oy-13,fill:"var(--dim)","font-family":"var(--mono)",
+      "text-anchor":"middle","letter-spacing":"1.4","font-size":10}).textContent="WIND";
+  }
+  // scale bar
+  const px=Math.round(200/mpp);
+  add("line",{x1:22,y1:VB-30,x2:22+px,y2:VB-30,stroke:"var(--dim)","stroke-width":1.4});
+  add("text",{x:22,y:VB-38,fill:"var(--dim)","font-size":10.5,"font-family":"var(--mono)"}).textContent="200 m";
+}
+
+/* ---------- ledger ---------- */
+const SEVLABEL=["clear","minor","major","critical"];
+function ledgerRow(ev){
+  const p=ev.payload||{}, row=document.createElement("div");
+  row.className="entry fresh"; row.dataset.k=ev.kind;
+  if(p.status==="error") row.dataset.err="1";
+
+  let who=ev.source, ms="", txt="", args="";
+  if(ev.kind==="perception"){
+    txt = p.hazard_description||"";
+    ms = p.latency_ms!=null ? `${p.latency_ms} ms` : "";
+    if(p.severity!=null) args = `severity ${p.severity} · ${SEVLABEL[p.severity]} · confidence ${(p.confidence??0).toFixed(2)}`;
+  } else if(ev.kind==="reasoning"){
+    txt = p.text||""; if(p.decision) args = `→ ${p.decision}`;
+  } else if(ev.kind==="tool_call"){
+    who = `${p.agent||ev.source} · ${p.tool||""}`;
+    ms = p.duration_ms!=null ? `${p.duration_ms} ms` : "";
+    txt = p.status==="error" ? (p.error||"tool failed")
+        : (p.result?.summary || p.result?.note || p.result?.material
+           || Object.keys(p.result||{}).slice(0,3).map(k=>`${k}=${p.result[k]}`).join("  ") || "ok");
+    args = "args " + JSON.stringify(p.args||{});
+  } else if(ev.kind==="dispatch"){
+    who = `${p.channel||"dispatch"} · P${p.priority??"?"}`;
+    txt = p.brief||"";
+    args = "to " + (p.recipients||[]).join(", ");
+  }
+
+  const m=String(Math.floor((ev.t||0)/60)).padStart(2,"0"), s=(ev.t%60).toFixed(1).padStart(4,"0");
+  row.innerHTML = `<div class="t">${m}:${s}</div><div class="bar"></div><div class="body">
+      <div class="who"><b></b><span class="ms"></span></div>
+      <div class="txt"></div>${args?'<div class="args"></div>':""}</div>`;
+  row.querySelector(".who b").textContent = who;
+  row.querySelector(".ms").textContent = ms;
+  row.querySelector(".txt").textContent = txt;
+  if(args) row.querySelector(".args").textContent = args;
+
+  const led=$("ledger");
+  const pinned = led.scrollTop + led.clientHeight >= led.scrollHeight - 60;
+  led.appendChild(row);
+  if(pinned) led.scrollTop = led.scrollHeight;
+  $("logcount").textContent = `${++W.count} entries`;
+}
+
+/* ---------- panel updates ---------- */
+function onPerception(p){
+  clockT = Math.max(clockT, 0); running = true;
+  $("readout").hidden = false;
+  if(p.camera_id) $("cam").textContent = p.camera_id;
+  const sev = p.severity ?? 0;
+  const chip=$("sev"); chip.className = `chip sev${sev}`; chip.textContent = SEVLABEL[sev];
+  $("itype").textContent = (p.incident_type||"—").replace(/_/g," ");
+  const pl=$("placard");
+  if(p.placard?.detected){ pl.hidden=false; pl.textContent = `UN${p.placard.un_number} · ${(p.placard.confidence*100|0)}%`; }
+  $("desc").textContent = p.hazard_description||"";
+  const meta=[];
+  if(p.vehicles_involved) meta.push(`${p.vehicles_involved} vehicles`);
+  if(p.lanes_blocked) meta.push(`${p.lanes_blocked} lanes blocked`);
+  if(p.casualties_visible) meta.push(`${p.casualties_visible} casualties visible`);
+  if(p.confidence!=null) meta.push(`conf ${p.confidence.toFixed(2)}`);
+  if(p.latency_ms!=null) meta.push(`${p.latency_ms} ms`);
+  $("vmeta").textContent = meta.join("     ");
+
+  if(p.location?.lat){ W.incident={lat:p.location.lat,lon:p.location.lon};
+    $("maptag").textContent = p.location.name||"fix acquired"; }
+  if(p.wind?.from_deg!=null) W.wind = p.wind.from_deg;
+  if(Array.isArray(p.boxes)) drawBoxes(p.boxes);
+  if(p.clip_time!=null && vid.readyState>0 && Math.abs(vid.currentTime-p.clip_time)>1.2){
+    vid.currentTime = p.clip_time; vid.play().catch(()=>{});
+  }
+  renderMap();
+}
+
+function onTool(p){
+  const r=p.result||{};
+  if(p.tool==="erg_lookup" && p.status==="ok"){
+    $("erg-empty").hidden=true; $("erg-body").hidden=false;
+    $("erg-guide").textContent = r.guide ?? "—";
+    $("erg-mat").textContent   = r.material ?? "—";
+    $("erg-un").textContent    = p.args?.un_number ? `UN ${p.args.un_number}` : "—";
+    $("erg-iso").textContent   = r.isolation_m!=null ? `${r.isolation_m} m` : "—";
+    $("erg-day").textContent   = r.downwind_day_m!=null ? `${r.downwind_day_m} m` : "—";
+    $("erg-night").textContent = r.downwind_night_m!=null ? `${r.downwind_night_m} m` : "—";
+    $("erg-ppe").textContent   = r.ppe ?? "—";
+    if(r.note){ $("erg-noterow").hidden=false; $("erg-note").textContent=r.note; }
+    W.zones = { isolation_m:r.isolation_m, downwind_m:r.downwind_day_m ?? r.downwind_night_m };
+    renderMap();
+  }
+  if(r.wind_from_deg!=null){ W.wind=r.wind_from_deg; renderMap(); }
+  if(Array.isArray(r.route)){ W.route=r.route; renderMap(); }
+}
+
+function onDispatch(p){
+  $("disp-empty").hidden = true;
+  const el=document.createElement("div"); el.className="dispatch";
+  el.innerHTML = `<div class="hd"><span class="ch"></span><span class="ack"></span></div>
+                  <div class="to"></div><div class="brief"></div>`;
+  el.querySelector(".ch").textContent = `${(p.channel||"").replace(/_/g," ")} · P${p.priority??"?"}`;
+  const ack=el.querySelector(".ack");
+  ack.textContent = p.acknowledged ? "acknowledged" : "sent";
+  if(p.acknowledged) ack.classList.add("yes");
+  el.querySelector(".to").textContent = (p.recipients||[]).join(" · ");
+  el.querySelector(".brief").textContent = p.brief||"";
+  $("disp-list").prepend(el);
+}
+
+function onTelemetry(p){
+  const used=p.unified_mem_used_gb, tot=p.unified_mem_total_gb||128;
+  if(used!=null){ $("tm-mem").textContent = `${used.toFixed(1)} / ${tot} GB`;
+    const pct=used/tot*100; const b=$("tm-membar"); b.style.width=pct+"%";
+    b.classList.toggle("hot", pct>80); }
+  if(p.gpu_util_pct!=null){ $("tm-gpu").textContent = `${p.gpu_util_pct}%`;
+    const b=$("tm-gpubar"); b.style.width=p.gpu_util_pct+"%"; b.classList.toggle("hot",p.gpu_util_pct>80); }
+  if(p.streams_active!=null) $("tm-str").textContent = p.streams_active;
+  if(p.vlm_calls_total!=null) $("tm-vlm").textContent = p.vlm_calls_total;
+  if(p.video_bytes_egressed!=null){
+    $("tm-eg").textContent = p.video_bytes_egressed === 0 ? "0 bytes" : `${p.video_bytes_egressed}`;
+    const e=$("egress"); e.classList.toggle("on", p.video_bytes_egressed===0);
+    e.innerHTML = `<i class="dot"></i>Video egress ${p.video_bytes_egressed===0?"0 bytes":"NON-ZERO"}`;
+  }
+}
+
+function resetAll(){
+  clockT=0; running=false; W.incident=W.zones=W.route=W.wind=null; W.count=0;
+  $("ledger").replaceChildren(); $("disp-list").replaceChildren();
+  $("disp-empty").hidden=false; $("erg-empty").hidden=false; $("erg-body").hidden=true;
+  $("erg-noterow").hidden=true; $("readout").hidden=true; $("logcount").textContent="0 entries";
+  $("map").replaceChildren(); $("boxes").replaceChildren();
+  $("maptag").textContent="awaiting fix"; $("cam").textContent="no stream";
+  resetAgents();
+  if(vid.readyState>0){ vid.currentTime=0; }
+}
+
+/* ---------- agent orchestration strip ----------
+   Each agent holds a state until something moves it. Tool calls arrive with their
+   duration already known, so we replay that duration as a progress sweep — the
+   strip reads as live work rather than a log that already finished. */
+const AGENTS = [
+  {id:"perception",   role:"perceive",  name:"cosmos-reason2-8b", sub:false, idle:"Monitoring feed"},
+  {id:"orchestrator", role:"orchestrate", name:"nemotron-nano-9b", sub:false, idle:"Standing by"},
+  {id:"hazmat_agent", role:"sub-agent", name:"hazmat",   sub:true, idle:"ERG 2024 loaded"},
+  {id:"traffic_agent",role:"sub-agent", name:"traffic",  sub:true, idle:"No closures"},
+  {id:"comms_agent",  role:"sub-agent", name:"comms",    sub:true, idle:"Channels clear"},
+];
+const AS = {};   // runtime state per agent
+
+function buildAgents(){
+  const host=$("agents"); host.replaceChildren();
+  for(const a of AGENTS){
+    AS[a.id] = {calls:0, ms:0, timer:null};
+    const el=document.createElement("div");
+    el.className = "agent" + (a.sub ? " sub" : "");
+    el.id = "ag-"+a.id; el.dataset.state="idle";
+    el.innerHTML = `<div class="role">${a.role}</div>
+      <div class="name"><i class="led"></i><span></span></div>
+      <div class="task"></div><div class="load"></div><div class="sweep"></div>`;
+    el.querySelector(".name span").textContent = a.name;
+    el.querySelector(".task").textContent = a.idle;
+    host.appendChild(el);
+  }
+}
+buildAgents();
+
+function agentState(id, state, task, durMs){
+  const el=$("ag-"+id), st=AS[id];
+  if(!el || !st) return;
+  clearTimeout(st.timer);
+  el.dataset.state = state;
+  if(task) el.querySelector(".task").textContent = task;
+  if(state==="active"){
+    // give short calls a visible floor so the strip doesn't just flicker
+    const d = Math.min(Math.max(durMs||400, 550), 1600);
+    el.style.setProperty("--dur", d+"ms");
+    const sweep=el.querySelector(".sweep");
+    sweep.style.animation="none"; void sweep.offsetWidth; sweep.style.animation="";
+  }
+  el.querySelector(".load").textContent =
+    st.calls ? `${st.calls} call${st.calls>1?"s":""} · ${st.ms} ms` : "";
+}
+
+function agentWork(id, task, durMs, endState, endTask){
+  const st=AS[id]; if(!st) return;
+  st.calls++; st.ms += (durMs||0);
+  agentState(id, "active", task, durMs);
+  const wait = Math.min(Math.max(durMs||400, 550), 1600);
+  st.timer = setTimeout(()=>agentState(id, endState, endTask), wait);
+}
+
+function resetAgents(){
+  for(const a of AGENTS){
+    const st=AS[a.id]; if(st){ clearTimeout(st.timer); st.calls=0; st.ms=0; }
+    const el=$("ag-"+a.id);
+    if(el){ el.dataset.state="idle";
+      el.querySelector(".task").textContent=a.idle;
+      el.querySelector(".load").textContent=""; }
+  }
+}
+
+function driveAgents(ev){
+  const p=ev.payload||{};
+  if(ev.kind==="perception"){
+    const sev=p.severity ?? 0;
+    const mode = p.inference_mode==="heuristic_fallback" ? " (fallback)" : "";
+    if(sev>=2) agentState("perception","hot",
+      `${(p.incident_type||"incident").replace(/_/g," ")}${mode}`);
+    else agentState("perception", sev===1?"active":"ok",
+      (p.hazard_description||"").slice(0,52)+mode, p.latency_ms);
+    AS.perception.calls++; AS.perception.ms += (p.latency_ms||0);
+    $("ag-perception").querySelector(".load").textContent =
+      `${AS.perception.calls} frame${AS.perception.calls>1?"s":""} · ${AS.perception.ms} ms`;
+  }
+  if(ev.kind==="reasoning"){
+    agentWork("orchestrator", p.text ? p.text.slice(0,54) : "Reasoning",
+              900, "ok", p.decision ? `→ ${p.decision}` : "Standing by");
+  }
+  if(ev.kind==="tool_call"){
+    const id = p.agent || ev.source;
+    const label = (p.tool||"").replace(/_/g," ");
+    if(p.status==="error"){
+      agentWork(id, label, p.duration_ms, "error", (p.error||"failed").slice(0,52));
+    } else {
+      const done = p.result?.summary || p.result?.material
+                || p.result?.note || `${label} ok`;
+      agentWork(id, label, p.duration_ms, "ok", String(done).slice(0,52));
+    }
+  }
+  if(ev.kind==="dispatch"){
+    agentWork("comms_agent", `transmit ${(p.channel||"").replace(/_/g," ")}`,
+              700, "ok", `${(p.recipients||[]).length} units notified`);
+  }
+}
+
+function handle(ev){
+  if(ev.kind==="control"){ if(ev.payload?.action==="reset") resetAll(); return; }
+  if(ev.t!=null){ clockT=Math.max(clockT,ev.t); running=true; }
+  const p=ev.payload||{};
+  if(ev.kind==="telemetry"){ onTelemetry(p); return; }   // telemetry stays out of the ledger
+  driveAgents(ev);
+  if(ev.kind==="perception") onPerception(p);
+  if(ev.kind==="tool_call")  onTool(p);
+  if(ev.kind==="dispatch")   onDispatch(p);
+  ledgerRow(ev);
+}
+
+/* ---------- theme ----------
+   Follows the OS by default; the toggle overrides and persists where storage
+   is available. Wrapped because some embedded viewers block it outright. */
+function setTheme(mode){
+  document.documentElement.setAttribute("data-theme", mode);
+  $("themeLbl").textContent = mode === "light" ? "Dark" : "Light";
+  $("themeIcon").textContent = mode === "light" ? "◑" : "◐";
+  try{ localStorage.setItem("omni-theme", mode); }catch(e){}
+  if(W.incident) renderMap();
+}
+(function initTheme(){
+  let saved=null;
+  try{ saved = localStorage.getItem("omni-theme"); }catch(e){}
+  const prefersLight = window.matchMedia
+    && window.matchMedia("(prefers-color-scheme: light)").matches;
+  setTheme(saved || (prefersLight ? "light" : "dark"));
+})();
+$("theme").addEventListener("click", ()=>{
+  setTheme(document.documentElement.getAttribute("data-theme")==="light" ? "dark" : "light");
+});
+
+/* ---------- bus ---------- */
+let ws, retry=0;
+function connect(){
+  ws = new WebSocket(`${location.protocol==="https:"?"wss":"ws"}://${location.host}/ws`);
+  ws.onopen = ()=>{ retry=0; const l=$("link"); l.classList.add("on");
+                    l.innerHTML='<i class="dot"></i>Bus live'; };
+  ws.onclose = ()=>{ const l=$("link"); l.classList.remove("on");
+                     l.innerHTML='<i class="dot"></i>Bus offline';
+                     setTimeout(connect, Math.min(4000, 400*++retry)); };
+  ws.onmessage = e => { try{ handle(JSON.parse(e.data)); }catch(err){ console.error(err); } };
+}
+connect();
+</script>
+</body>
+</html>
