@@ -37,28 +37,29 @@ class StreamFrameEvent:
     visual_summary: Optional[VisualContextSummary] = None
 
 class VSSPerceptionPipeline:
-    """Option A: High-Definition Targeted Frame Burst on Cosmos Reasoner."""
+    """True Pixel-Level Vision Pipeline: Real Motion Differencing -> High-Definition Burst on Cosmos Reasoner."""
 
     STAGE2_DEEP_PROMPT = """You are an objective High-Definition Surveillance Vision Reasoner on NVIDIA DGX Spark.
-Examine this high-definition frame burst captured from a roadway surveillance camera.
+Examine this high-definition sequence of frames captured directly from an edge roadway surveillance camera.
 
-Vehicle Identification Instructions:
-- Carefully distinguish between passenger vehicles (sedans, hatchbacks, coupes, SUVs) vs commercial vehicles (semi-trucks, school buses, fire engines). Do not label a yellow passenger car as a school bus or a red car as a fire truck unless markings/flashers are clearly visible.
+Vehicle Identification Guidelines:
+- Carefully identify all vehicles by their actual physical body type, size, and color (e.g. yellow passenger sedan, red hatchback, black pickup, white commercial trailer).
+- Do not call a yellow car a school bus or a red car a fire truck unless official signage, flashers, or markings are clearly visible.
 
-Classification Instructions:
-1. Normal Traffic: Flowing vehicles, no collisions or damage -> severity="LOW", crisis_type="Normal Traffic Flow", hazard_indicators=[]
-2. Roadside Incident / Towing / Shoulder Breakdown: Vehicle on shoulder with hazard lights, tow truck assisting, minor slowdown -> severity="MEDIUM", crisis_type="Roadside Assistance / Vehicle on Shoulder", hazard_indicators=["vehicle on shoulder"]
-3. Severe Collision / Fire / Wreckage: Physical impact between vehicles, wreckage/debris blocking lanes, fire, smoke, spilled fluids -> severity="CRITICAL" or "HIGH", crisis_type="Vehicle Collision", hazard_indicators=["wreckage", "debris", etc.]
+Scene Categorization:
+1. Normal Traffic Flow: Vehicles moving smoothly with no accidents or lane blockages -> severity="LOW", crisis_type="Normal Traffic Flow", hazard_indicators=[]
+2. Roadside Incident / Towing / Breakdown: A vehicle stopped on the shoulder with hazard lights, tow truck assisting, minor weather slowdown -> severity="MEDIUM", crisis_type="Roadside Assistance / Vehicle on Shoulder", hazard_indicators=["vehicle on shoulder"]
+3. Vehicle Collision / Fire / Chemical Spill: Physical impact between vehicles, wreckage or debris blocking active lanes, flames, smoke, or spilled fluids -> severity="CRITICAL" or "HIGH", crisis_type="Vehicle Collision", hazard_indicators=["wreckage", "debris", etc.]
 
 Output a STRICT JSON object:
 {
-  "location": "string (physical setting, e.g. Urban Intersection or Highway Corridor)",
+  "location": "string (physical scene setting observed in pixels, e.g. Urban Intersection or Highway Corridor)",
   "camera_id": "string",
   "crisis_type": "string",
   "severity": "CRITICAL" | "HIGH" | "MEDIUM" | "LOW",
   "vehicles_involved": integer,
   "hazard_indicators": ["list of observed hazards or empty"],
-  "raw_summary": "2-3 sentence visual summary describing the exact vehicles involved (make/color/body type), impact, and road state",
+  "raw_summary": "2-3 sentence visual summary describing the exact vehicles, impact/roadside state, and roadway conditions",
   "confidence": float (0.0 to 1.0)
 }"""
 
@@ -83,7 +84,7 @@ Output a STRICT JSON object:
         return "nvidia/cosmos-reason2-8b"
 
     def get_video_duration(self, video_path: str) -> float:
-        """Retrieves exact video duration."""
+        """Retrieves exact video duration via ffprobe."""
         try:
             cmd = [
                 "ffprobe", "-v", "error",
@@ -99,7 +100,6 @@ Output a STRICT JSON object:
     def extract_single_frame(self, video_path: str, timestamp_sec: float) -> Optional[str]:
         """Extracts a high-definition JPEG frame at a specific timestamp as base64."""
         try:
-            # Scale to 1280px width for crystal clear vehicle recognition
             cmd = [
                 "ffmpeg", "-y", "-ss", str(timestamp_sec),
                 "-i", video_path,
@@ -118,17 +118,61 @@ Output a STRICT JSON object:
             pass
         return None
 
-    def scan_motion_and_anomaly_points(self, video_path: str) -> Tuple[bool, float, str]:
-        """Scans video rapidly to identify exact impact/anomaly timestamp."""
-        duration = self.get_video_duration(video_path)
-        filename = os.path.basename(video_path).lower()
+    def extract_raw_grayscale_thumbnail(self, video_path: str, timestamp_sec: float) -> Optional[bytes]:
+        """Extracts a tiny 32x32 raw grayscale thumbnail for ultra-fast motion differencing."""
+        try:
+            cmd = [
+                "ffmpeg", "-y", "-ss", str(timestamp_sec),
+                "-i", video_path,
+                "-vframes", "1",
+                "-vf", "scale=32:32,format=gray",
+                "-f", "rawvideo",
+                "-"
+            ]
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            raw_bytes, _ = proc.communicate(timeout=4)
+            if len(raw_bytes) == 32 * 32:
+                return raw_bytes
+        except Exception:
+            pass
+        return None
 
-        if any(kw in filename for kw in ["incident", "crash", "scenario_1", "scenario_2", "accident", "collision", "vid-01"]):
-            return True, max(1.0, duration * 0.40), "Incident collision/anomaly detected in stream"
-        elif any(kw in filename for kw in ["snow", "towing", "93", "breakdown"]):
-            return True, max(1.0, duration * 0.65), "Roadside vehicle operation detected"
+    def scan_motion_and_anomaly_points(self, video_path: str) -> Tuple[bool, float, str]:
+        """Computes true mathematical pixel delta across video timeline to locate exact anomaly moment."""
+        duration = self.get_video_duration(video_path)
         
-        return False, duration * 0.5, "Uniform traffic flow"
+        # Sample 8 checkpoints across the video
+        num_samples = 8
+        sample_times = [round((i + 0.5) * (duration / num_samples), 2) for i in range(num_samples)]
+        
+        thumbnails: List[Tuple[float, bytes]] = []
+        for t in sample_times:
+            raw = self.extract_raw_grayscale_thumbnail(video_path, t)
+            if raw:
+                thumbnails.append((t, raw))
+
+        if len(thumbnails) < 2:
+            return False, duration * 0.5, "Standard traffic flow"
+
+        # Calculate absolute pixel difference between consecutive frames
+        deltas = []
+        for i in range(1, len(thumbnails)):
+            t_curr, bytes_curr = thumbnails[i]
+            _, bytes_prev = thumbnails[i - 1]
+            
+            # Mean absolute pixel difference
+            diff = sum(abs(b1 - b2) for b1, b2 in zip(bytes_curr, bytes_prev)) / len(bytes_curr)
+            deltas.append((t_curr, diff))
+
+        # Find maximum delta (peak motion change / impact / stoppage)
+        max_t, max_diff = max(deltas, key=lambda x: x[1])
+        avg_diff = sum(d[1] for d in deltas) / len(deltas)
+
+        # If peak difference exceeds 1.3x baseline variance, an anomaly/impact occurred
+        if max_diff > (avg_diff * 1.25) and max_diff > 8.0:
+            return True, max_t, f"Motion & scene variance spike detected (Δ={max_diff:.1f})"
+
+        return False, max_t, "Continuous traffic flow"
 
     def extract_targeted_burst(self, video_path: str, center_t: float) -> List[Tuple[float, str]]:
         """Extracts high-density burst of frames around the exact anomaly moment."""
@@ -149,7 +193,7 @@ Output a STRICT JSON object:
         url = f"{self.endpoint_url}/chat/completions"
         active_model = self._get_active_model_name()
 
-        loc_text = f"Registered Location: {location_hint}" if location_hint else "Determine setting from video pixels."
+        loc_text = f"Registered Location: {location_hint}" if location_hint else "Determine physical setting from video pixels."
         content_elements = [
             {
                 "type": "text",
@@ -186,7 +230,7 @@ Output a STRICT JSON object:
         location_hint: Optional[str] = None,
         speed_multiplier: float = 1.0
     ) -> Generator[StreamFrameEvent, None, None]:
-        """Streams real-time edge monitoring with dynamic severity routing."""
+        """Streams real-time edge monitoring driven purely by pixel analysis."""
         duration = self.get_video_duration(video_path)
         has_anomaly, anomaly_t, anomaly_desc = self.scan_motion_and_anomaly_points(video_path)
 
@@ -198,7 +242,7 @@ Output a STRICT JSON object:
             elapsed_seconds=0.0,
             status="NORMAL_MONITORING",
             severity="LOW",
-            scene_description=f"Edge Camera ({camera_id}) online ({duration:.1f}s feed). High-speed motion scanner active...",
+            scene_description=f"Edge Camera ({camera_id}) online ({duration:.1f}s feed). Pixel motion scanner active...",
             visual_summary=None
         )
 
@@ -215,8 +259,10 @@ Output a STRICT JSON object:
                 visual_summary=None
             )
 
-        # Always run diagnosis on the key frames
-        burst_frames = self.extract_targeted_burst(video_path, anomaly_t if has_anomaly else duration * 0.5)
+        # Extract frames around detected anomaly or midpoint
+        target_t = anomaly_t if has_anomaly else duration * 0.5
+        burst_frames = self.extract_targeted_burst(video_path, target_t)
+        
         try:
             summary = self.deep_sequence_diagnosis(burst_frames, location_hint)
         except Exception:
@@ -225,7 +271,7 @@ Output a STRICT JSON object:
         summary.camera_id = camera_id
         summary.timestamp = datetime.datetime.now().strftime("%H:%M:%S")
 
-        # CRITICAL FIX: Route final status strictly based on Cosmos Reasoner's output
+        # Route status strictly from Cosmos Reasoner's output
         if summary.severity in ["CRITICAL", "HIGH", "SEVERE"] or "collision" in summary.crisis_type.lower() or "crash" in summary.raw_summary.lower():
             final_status = "CRISIS_IMPACT"
         elif summary.severity in ["MEDIUM", "MODERATE"] or "roadside" in summary.crisis_type.lower():
@@ -235,7 +281,7 @@ Output a STRICT JSON object:
 
         yield StreamFrameEvent(
             timestamp=summary.timestamp,
-            elapsed_seconds=anomaly_t if has_anomaly else duration,
+            elapsed_seconds=target_t,
             status=final_status,
             severity=summary.severity,
             scene_description=f"Cosmos Reasoner Diagnosis: {summary.raw_summary}",
@@ -243,7 +289,7 @@ Output a STRICT JSON object:
         )
 
     def process_video_file(self, video_path: str, location_hint: Optional[str] = None) -> VisualContextSummary:
-        """Direct end-to-end processing."""
+        """Direct end-to-end processing purely on video frames."""
         _, anomaly_t, _ = self.scan_motion_and_anomaly_points(video_path)
         burst_frames = self.extract_targeted_burst(video_path, anomaly_t)
         if burst_frames:
@@ -268,7 +314,7 @@ Output a STRICT JSON object:
             raw_crisis_type = data.get("crisis_type", "Roadway Incident")
             hazard_list = list(data.get("hazard_indicators", []))
             raw_sev = str(data.get("severity", "HIGH")).upper()
-            detected_loc = location_hint or data.get("location", "Urban Commercial Intersection")
+            detected_loc = location_hint or data.get("location", "Surveillance Camera Scene")
 
             # Check if this is an actual collision / severe accident
             is_collision = any(kw in raw_summary_text.lower() or kw in raw_crisis_type.lower() for kw in [
@@ -291,7 +337,7 @@ Output a STRICT JSON object:
             ]) and not is_collision
 
             if is_collision:
-                raw_crisis_type = "Vehicle Collision at Intersection"
+                raw_crisis_type = "Vehicle Collision"
                 severity_str = "CRITICAL" if raw_sev in ["CRITICAL", "SEVERE"] else "HIGH"
             elif is_roadside:
                 raw_crisis_type = "Roadside Assistance / Vehicle on Shoulder"
@@ -324,9 +370,9 @@ Output a STRICT JSON object:
             )
         except Exception:
             return VisualContextSummary(
-                location=location_hint or "Commercial Roadway Intersection",
+                location=location_hint or "Roadway Intersection",
                 camera_id="CAM-DGX-SPARK-01",
-                crisis_type="Vehicle Collision",
+                crisis_type="Vehicle Incident",
                 severity="HIGH",
                 vehicles_involved=2,
                 hazard_indicators=["wreckage", "debris"],
@@ -337,52 +383,14 @@ Output a STRICT JSON object:
 
     def _extract_scenario_heuristic(self, video_path: str, location_hint: Optional[str] = None) -> VisualContextSummary:
         """Offline fallback only when Spark NIM is unreachable."""
-        filename = os.path.basename(video_path).lower()
-        if "11387588" in filename or "scenario_1" in filename:
-            return VisualContextSummary(
-                location=location_hint or "Highway 101 Corridor",
-                camera_id="CAM-402-HWY",
-                crisis_type="Commercial collision with hazardous chemical breach",
-                severity="CRITICAL",
-                vehicles_involved=2,
-                hazard_indicators=["green chemical leak", "dense vapor cloud near ground", "corroded tanker fitting"],
-                raw_summary="Two-vehicle collision between a commercial tanker and passenger vehicle. Ruptured rear valve leaking dense greenish-yellow vapor.",
-                confidence=0.97,
-                timestamp=datetime.datetime.now().strftime("%H:%M:%S")
-            )
-        elif "4686100" in filename or "scenario_2" in filename:
-            return VisualContextSummary(
-                location=location_hint or "Intermodal Highway Hub",
-                camera_id="CAM-108-INTERSECTION",
-                crisis_type="Multi-vehicle highway pileup with fuel spill",
-                severity="HIGH",
-                vehicles_involved=3,
-                hazard_indicators=["clear to amber liquid pool", "rainbow sheen", "heavy fuel vapors"],
-                raw_summary="Multi-vehicle highway pileup with overturned trailer. Flammable liquid fuel spreading with active ignition risk.",
-                confidence=0.94,
-                timestamp=datetime.datetime.now().strftime("%H:%M:%S")
-            )
-        elif "vid-01" in filename or "incident" in filename:
-            return VisualContextSummary(
-                location=location_hint or "Urban Commercial Intersection",
-                camera_id="CAM-EDGE-VID-01",
-                crisis_type="Vehicle Collision (Yellow Sedan & Red Hatchback)",
-                severity="HIGH",
-                vehicles_involved=2,
-                hazard_indicators=["vehicle wreckage", "debris on roadway"],
-                raw_summary="Physical collision at intersection between yellow sedan and red hatchback resulting in localized wreckage and lane blockage.",
-                confidence=0.96,
-                timestamp=datetime.datetime.now().strftime("%H:%M:%S")
-            )
         return VisualContextSummary(
-            location=location_hint or "Commercial Roadway Corridor",
+            location=location_hint or "Roadway Surveillance Location",
             camera_id="CAM-OFFLINE-MOCK",
-            crisis_type="Physical traffic collision",
+            crisis_type="Physical Emergency Incident",
             severity="HIGH",
             vehicles_involved=2,
             hazard_indicators=["vehicle wreckage", "blocked traffic"],
-            raw_summary="Traffic collision blocking lanes requiring emergency dispatch.",
+            raw_summary="Physical incident detected on roadway camera feed requiring emergency response.",
             confidence=0.90,
             timestamp=datetime.datetime.now().strftime("%H:%M:%S")
         )
-
