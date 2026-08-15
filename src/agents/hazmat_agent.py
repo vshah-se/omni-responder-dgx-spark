@@ -6,6 +6,9 @@ from src.config.settings import settings
 class HazmatAgent:
     """Identifies chemical threats using local Emergency Response Guidebook (ERG) database."""
 
+    # Words that should NEVER trigger a chemical alert by themselves
+    STOP_WORDS = {"vehicle", "car", "truck", "road", "highway", "shoulder", "lane", "traffic", "operation", "present", "none", "clear"}
+
     def __init__(self, db_path: str = settings.hazmat_db_path):
         self.db_path = db_path
         self.db = self._load_database()
@@ -17,8 +20,8 @@ class HazmatAgent:
         return []
 
     def analyze_hazard(self, visual_indicators: List[str], severity: str = "HIGH") -> Dict[str, Any]:
-        """Cross-references visual clues with local chemical hazard database."""
-        # If no indicators are reported and severity is LOW/NORMAL, no hazmat action needed
+        """Cross-references visual clues with local chemical hazard database with strict phrase matching."""
+        # If no indicators are reported or scene is routine/low/roadside without chemical leaks
         if not visual_indicators or severity in ["LOW", "NORMAL"]:
             return {
                 "status": "NO_HAZARDS_DETECTED",
@@ -33,14 +36,36 @@ class HazmatAgent:
                 "first_aid": "None required."
             }
 
-        # Check for specific chemical matches in ERG database
+        # Filter out generic stop words
+        cleaned_indicators = []
+        for ind in visual_indicators:
+            words = [w.lower() for w in ind.split() if w.lower() not in self.STOP_WORDS]
+            if words:
+                cleaned_indicators.append(" ".join(words))
+
+        if not cleaned_indicators:
+            return {
+                "status": "NO_HAZARDS_DETECTED",
+                "un_number": "NONE",
+                "chemical_name": "None (No Hazardous Materials Observed)",
+                "hazard_class": "N/A",
+                "isolation_radius_meters": 0,
+                "day_protection_km": 0.0,
+                "night_protection_km": 0.0,
+                "ppe_required": "None Required (Standard Operations)",
+                "fire_response": "Standard road operations.",
+                "first_aid": "None required."
+            }
+
+        # Match against specific chemical keywords (e.g. 'fuel spill', 'gasoline leak', 'chlorine', 'ammonia', 'acid')
         for entry in self.db:
-            indicators = entry.get("visual_indicators", [])
-            for ind in indicators:
-                for observed in visual_indicators:
-                    obs_words = set(observed.lower().split())
-                    ind_words = set(ind.lower().split())
-                    if len(obs_words.intersection(ind_words)) >= 1:
+            db_indicators = entry.get("visual_indicators", [])
+            for db_ind in db_indicators:
+                db_ind_lower = db_ind.lower()
+                for obs in cleaned_indicators:
+                    obs_lower = obs.lower()
+                    # Require strong substring or multi-word match
+                    if obs_lower in db_ind_lower or db_ind_lower in obs_lower:
                         return {
                             "status": "IDENTIFIED",
                             "un_number": entry["un_number"],
@@ -54,16 +79,30 @@ class HazmatAgent:
                             "first_aid": entry.get("first_aid", "Move victims upwind and administer oxygen.")
                         }
 
-        # Fallback when genuine unknown hazards/smoke are visibly present in a critical incident
+        # Only if severe collision with verified smoke/flames/unidentified fluids
+        if severity in ["CRITICAL", "HIGH", "SEVERE"]:
+            return {
+                "status": "SUSPICIOUS_HAZARD",
+                "un_number": "UN-UNKNOWN",
+                "chemical_name": "Unidentified Vapor / Fluid Hazard",
+                "hazard_class": "Class 9 (Precautionary Hazard)",
+                "isolation_radius_meters": 50,
+                "day_protection_km": 0.3,
+                "night_protection_km": 0.5,
+                "ppe_required": "Level B chemical protective clothing with SCBA",
+                "fire_response": "Approach with caution from upwind. Maintain 50m standoff perimeter.",
+                "first_aid": "Evacuate upwind if respiratory distress observed."
+            }
+
         return {
-            "status": "SUSPICIOUS_HAZARD",
-            "un_number": "UN-UNKNOWN",
-            "chemical_name": "Unidentified Vapor / Fluid Substance",
-            "hazard_class": "Class 9 (Precautionary Hazard)",
-            "isolation_radius_meters": 50,
-            "day_protection_km": 0.3,
-            "night_protection_km": 0.5,
-            "ppe_required": "Level B chemical protective clothing with SCBA",
-            "fire_response": "Approach with caution from upwind. Maintain 50m standoff perimeter.",
-            "first_aid": "Evacuate upwind if respiratory distress observed."
+            "status": "NO_HAZARDS_DETECTED",
+            "un_number": "NONE",
+            "chemical_name": "None (No Hazardous Materials Observed)",
+            "hazard_class": "N/A",
+            "isolation_radius_meters": 0,
+            "day_protection_km": 0.0,
+            "night_protection_km": 0.0,
+            "ppe_required": "None Required (Standard Operations)",
+            "fire_response": "Standard road operations.",
+            "first_aid": "None required."
         }
