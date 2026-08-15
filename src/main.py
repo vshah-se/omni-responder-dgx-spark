@@ -2,7 +2,7 @@ import argparse
 import sys
 import json
 import time
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from src.orchestrator.incident_manager import IncidentOrchestrator
 from src.perception.vss_pipeline import VisualContextSummary
 from src.config.settings import settings
@@ -58,7 +58,7 @@ def print_rich_incident_report(record: Dict[str, Any]):
         # Header banner
         header_text = Text()
         header_text.append(f"Omni-Responder: {colors['badge']}\n", style=colors["title_style"])
-        header_text.append(f"Scene: {perception.get('crisis_type', 'N/A')} | Location: {perception.get('location', 'N/A')}\n", style="white")
+        header_text.append(f"Scene: {perception.get('crisis_type', 'N/A')} | Location: {perception.get('location', 'Surveillance Feed')}\n", style="white")
         header_text.append(f"Platform: {record['platform']['hardware']} | {record['platform']['privacy_guarantee']}", style="dim")
         console.print(Panel(header_text, style=colors["border"], border_style=colors["border"]))
 
@@ -112,7 +112,7 @@ def print_rich_incident_report(record: Dict[str, Any]):
         print(f"CAD Dispatch: {dispatch.get('dispatch_code')} -> {dispatch.get('status_description')}")
         print("="*70 + "\n")
 
-def run_live_stream_simulation(video_path: str, location: str, speed: float):
+def run_live_stream_simulation(video_path: str, location: Optional[str], speed: float):
     """Simulates live continuous edge video feed with dynamic color coding."""
     orchestrator = IncidentOrchestrator()
 
@@ -130,7 +130,10 @@ def run_live_stream_simulation(video_path: str, location: str, speed: float):
         print("\n=== Omni-Responder: Live Edge Ingestion Active ===\n")
 
     print(f"\n📡 Connecting to Edge Camera Stream: {video_path}")
-    print(f"📍 Location: {location}")
+    if location:
+        print(f"📍 Registered Camera Location: {location}")
+    else:
+        print(f"📍 Location Mode: Autonomous Physical Scene Discovery (Cosmos AI)")
     print(f"⏳ Beginning continuous temporal monitoring (Pre-incident ➔ Crash Event ➔ Dispatch)...\n")
 
     for event in orchestrator.stream_incident(video_path, location_hint=location, speed_multiplier=speed):
@@ -169,7 +172,7 @@ def run_live_stream_simulation(video_path: str, location: str, speed: float):
 def main():
     parser = argparse.ArgumentParser(description="Omni-Responder: Autonomous Emergency Dispatch on NVIDIA DGX Spark")
     parser.add_argument("--video", type=str, default="data/video_clips/crash_scenario_1.mp4", help="Path to input video file")
-    parser.add_argument("--location", type=str, default="5th Ave & Market St Intersection", help="Incident location hint")
+    parser.add_argument("--location", type=str, default=None, help="Optional registered camera location override")
     parser.add_argument("--stream", action="store_true", help="Run temporal live stream monitoring simulation")
     parser.add_argument("--speed", type=float, default=1.0, help="Stream playback speed multiplier (default: 1.0)")
     parser.add_argument("--json", action="store_true", help="Output raw JSON record only")
