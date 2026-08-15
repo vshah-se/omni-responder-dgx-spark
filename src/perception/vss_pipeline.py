@@ -6,7 +6,7 @@ import subprocess
 import urllib.request
 import urllib.error
 from dataclasses import dataclass, field, asdict
-from typing import Dict, Any, List, Optional, Generator
+from typing import Dict, Any, List, Optional, Generator, Union
 from src.config.settings import settings
 
 @dataclass
@@ -122,7 +122,6 @@ Output a valid JSON object with keys: location, camera_id, crisis_type, severity
                 "image_url": {"url": f"data:image/jpeg;base64,{b64}"}
             })
 
-        # Single user turn with images (Cosmos Reasoner standard vision format)
         payload = {
             "model": active_model,
             "messages": [
@@ -140,7 +139,6 @@ Output a valid JSON object with keys: location, camera_id, crisis_type, severity
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             raw_text = data["choices"][0]["message"]["content"]
-            print(f"\n\033[1;32m[LIVE COSMOS AI RESPONSE RECEIVED]:\033[0m\n{raw_text}\n")
             return self.parse_vlm_json_output(raw_text)
 
     def stream_video_feed(
@@ -155,33 +153,34 @@ Output a valid JSON object with keys: location, camera_id, crisis_type, severity
             (3, "00:03", "NORMAL_MONITORING", "LOW", "Vehicles maintaining safe following distance. Surface dry, visibility 100%."),
             (7, "00:07", "NORMAL_MONITORING", "LOW", "Traffic passing through intersection normally. Zero anomalies."),
             (10, "00:10", "ANOMALY_DETECTED", "MEDIUM", "Sudden heavy braking detected in lane 2. Rapid vehicle deceleration observed."),
-            (12, "00:12", "ANOMALY_DETECTED", "MEDIUM", "Erratic trajectory detected. Impact imminent."),
-            (14, "00:14", "CRISIS_IMPACT", "CRITICAL", "CRASH IMPACT DETECTED! Analyzing real video frames with Cosmos Reasoner...")
+            (12, "00:12", "ANOMALY_DETECTED", "MEDIUM", "Erratic trajectory detected. Impact imminent.")
         ]
 
-        final_summary = self.process_video_file(video_path, location_hint)
-
+        # Step 1: Stream the pre-incident timeline in real-time
         for elapsed, ts, status, severity, desc in timeline:
             time.sleep(1.0 / max(speed_multiplier, 0.1))
-            if status == "CRISIS_IMPACT":
-                final_summary.timestamp = ts
-                yield StreamFrameEvent(
-                    timestamp=ts,
-                    elapsed_seconds=elapsed,
-                    status=status,
-                    severity=severity,
-                    scene_description=f"CRASH IMPACT! {final_summary.raw_summary}",
-                    visual_summary=final_summary
-                )
-            else:
-                yield StreamFrameEvent(
-                    timestamp=ts,
-                    elapsed_seconds=elapsed,
-                    status=status,
-                    severity=severity,
-                    scene_description=desc,
-                    visual_summary=None
-                )
+            yield StreamFrameEvent(
+                timestamp=ts,
+                elapsed_seconds=elapsed,
+                status=status,
+                severity=severity,
+                scene_description=desc,
+                visual_summary=None
+            )
+
+        # Step 2: Crash Impact Occurs at T=00:14 -> Trigger Cosmos Reasoner live on the video
+        time.sleep(1.0 / max(speed_multiplier, 0.1))
+        final_summary = self.process_video_file(video_path, location_hint)
+        final_summary.timestamp = "00:14"
+
+        yield StreamFrameEvent(
+            timestamp="00:14",
+            elapsed_seconds=14,
+            status="CRISIS_IMPACT",
+            severity="CRITICAL",
+            scene_description=f"CRASH IMPACT! {final_summary.raw_summary}",
+            visual_summary=final_summary
+        )
 
     def parse_vlm_json_output(self, raw_response: str) -> VisualContextSummary:
         """Parses and validates raw VLM text output into the typed VisualContextSummary schema."""
@@ -194,18 +193,32 @@ Output a valid JSON object with keys: location, camera_id, crisis_type, severity
 
         try:
             data = json.loads(cleaned)
+            
+            # Handle vehicles_involved if returned as a list or string
+            raw_vehicles = data.get("vehicles_involved", 1)
+            if isinstance(raw_vehicles, list):
+                vehicles_count = len(raw_vehicles)
+            elif isinstance(raw_vehicles, str) and not raw_vehicles.isdigit():
+                vehicles_count = 2
+            else:
+                vehicles_count = int(raw_vehicles)
+
+            # Normalize severity to uppercase string
+            severity_str = str(data.get("severity", "HIGH")).upper()
+            if severity_str == "SEVERE":
+                severity_str = "CRITICAL"
+
             return VisualContextSummary(
                 location=data.get("location", "Unknown Location"),
-                camera_id=data.get("camera_id", "CAM-DGX-SPARK-01"),
+                camera_id=str(data.get("camera_id", "CAM-DGX-SPARK-01")),
                 crisis_type=data.get("crisis_type", "Emergency Incident"),
-                severity=data.get("severity", "HIGH"),
-                vehicles_involved=int(data.get("vehicles_involved", 1)),
+                severity=severity_str,
+                vehicles_involved=vehicles_count,
                 hazard_indicators=list(data.get("hazard_indicators", [])),
-                raw_summary=data.get("raw_summary", raw_response[:200]),
+                raw_summary=data.get("raw_summary", raw_response[:250]),
                 confidence=float(data.get("confidence", 0.95))
             )
         except Exception:
-            # If model returned freeform text instead of strict JSON, create structured summary from text
             return VisualContextSummary(
                 location="5th Ave & Market St Intersection",
                 camera_id="CAM-DGX-SPARK-01",
