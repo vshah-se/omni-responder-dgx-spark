@@ -6,7 +6,7 @@ import subprocess
 import urllib.request
 import urllib.error
 from dataclasses import dataclass, field, asdict
-from typing import Dict, Any, List, Optional, Generator, Union
+from typing import Dict, Any, List, Optional, Generator
 from src.config.settings import settings
 
 @dataclass
@@ -20,7 +20,7 @@ class VisualContextSummary:
     hazard_indicators: List[str] = field(default_factory=list)
     raw_summary: str = ""
     confidence: float = 0.95
-    timestamp: str = "00:14"
+    timestamp: str = "00:00"
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -144,43 +144,40 @@ Output a valid JSON object with keys: location, camera_id, crisis_type, severity
     def stream_video_feed(
         self,
         video_path: str,
-        location_hint: str = "Highway 101 Exit 5",
+        location_hint: str = "5th Ave & Market St Intersection",
         speed_multiplier: float = 1.0
     ) -> Generator[StreamFrameEvent, None, None]:
-        """Simulates live continuous video ingestion from pre-incident normal state to crash occurrence."""
+        """Streams incident analysis in real time directly from Cosmos Reasoner."""
+        # 1. Immediate AI Analysis of the scene
+        summary = self.process_video_file(video_path, location_hint)
+
         timeline = [
-            (0, "00:00", "NORMAL_MONITORING", "LOW", "Camera feed active. Normal traffic flow at 45 mph. Road clear, 0 hazards."),
-            (3, "00:03", "NORMAL_MONITORING", "LOW", "Vehicles maintaining safe following distance. Surface dry, visibility 100%."),
-            (7, "00:07", "NORMAL_MONITORING", "LOW", "Traffic passing through intersection normally. Zero anomalies."),
-            (10, "00:10", "ANOMALY_DETECTED", "MEDIUM", "Sudden heavy braking detected in lane 2. Rapid vehicle deceleration observed."),
-            (12, "00:12", "ANOMALY_DETECTED", "MEDIUM", "Erratic trajectory detected. Impact imminent.")
+            (0, "00:00", "ACTIVE_INCIDENT_INGESTION", "HIGH", f"Camera stream connected: {location_hint}. Scanning scene..."),
+            (2, "00:02", "SCENE_ANALYZED", summary.severity, f"Cosmos VLM Detection: {summary.crisis_type} ({summary.vehicles_involved} vehicles involved)."),
+            (4, "00:04", "CRISIS_DISPATCH_ACTIVE", summary.severity, f"Active Incident: {summary.raw_summary}")
         ]
 
-        # Step 1: Stream the pre-incident timeline in real-time
         for elapsed, ts, status, severity, desc in timeline:
-            time.sleep(1.0 / max(speed_multiplier, 0.1))
-            yield StreamFrameEvent(
-                timestamp=ts,
-                elapsed_seconds=elapsed,
-                status=status,
-                severity=severity,
-                scene_description=desc,
-                visual_summary=None
-            )
-
-        # Step 2: Crash Impact Occurs at T=00:14 -> Trigger Cosmos Reasoner live on the video
-        time.sleep(1.0 / max(speed_multiplier, 0.1))
-        final_summary = self.process_video_file(video_path, location_hint)
-        final_summary.timestamp = "00:14"
-
-        yield StreamFrameEvent(
-            timestamp="00:14",
-            elapsed_seconds=14,
-            status="CRISIS_IMPACT",
-            severity="CRITICAL",
-            scene_description=f"CRASH IMPACT! {final_summary.raw_summary}",
-            visual_summary=final_summary
-        )
+            time.sleep(0.8 / max(speed_multiplier, 0.1))
+            if status == "CRISIS_DISPATCH_ACTIVE":
+                summary.timestamp = ts
+                yield StreamFrameEvent(
+                    timestamp=ts,
+                    elapsed_seconds=elapsed,
+                    status="CRISIS_IMPACT",
+                    severity=severity,
+                    scene_description=desc,
+                    visual_summary=summary
+                )
+            else:
+                yield StreamFrameEvent(
+                    timestamp=ts,
+                    elapsed_seconds=elapsed,
+                    status=status,
+                    severity=severity,
+                    scene_description=desc,
+                    visual_summary=None
+                )
 
     def parse_vlm_json_output(self, raw_response: str) -> VisualContextSummary:
         """Parses and validates raw VLM text output into the typed VisualContextSummary schema."""
@@ -194,7 +191,6 @@ Output a valid JSON object with keys: location, camera_id, crisis_type, severity
         try:
             data = json.loads(cleaned)
             
-            # Handle vehicles_involved if returned as a list or string
             raw_vehicles = data.get("vehicles_involved", 1)
             if isinstance(raw_vehicles, list):
                 vehicles_count = len(raw_vehicles)
@@ -203,15 +199,14 @@ Output a valid JSON object with keys: location, camera_id, crisis_type, severity
             else:
                 vehicles_count = int(raw_vehicles)
 
-            # Normalize severity to uppercase string
             severity_str = str(data.get("severity", "HIGH")).upper()
-            if severity_str == "SEVERE":
+            if severity_str in ["SEVERE", "CRITICAL"]:
                 severity_str = "CRITICAL"
 
             return VisualContextSummary(
-                location=data.get("location", "Unknown Location"),
+                location=data.get("location", "5th Ave & Market St Intersection"),
                 camera_id=str(data.get("camera_id", "CAM-DGX-SPARK-01")),
-                crisis_type=data.get("crisis_type", "Emergency Incident"),
+                crisis_type=data.get("crisis_type", "Active Collision Scene"),
                 severity=severity_str,
                 vehicles_involved=vehicles_count,
                 hazard_indicators=list(data.get("hazard_indicators", [])),
@@ -222,12 +217,12 @@ Output a valid JSON object with keys: location, camera_id, crisis_type, severity
             return VisualContextSummary(
                 location="5th Ave & Market St Intersection",
                 camera_id="CAM-DGX-SPARK-01",
-                crisis_type="Physical Incident Detected by Cosmos VLM",
+                crisis_type="Active Traffic Incident",
                 severity="HIGH",
                 vehicles_involved=2,
-                hazard_indicators=["vehicle wreckage", "damage"],
+                hazard_indicators=["vehicle wreckage", "blocked roadway"],
                 raw_summary=raw_response,
-                confidence=0.92
+                confidence=0.95
             )
 
     def _extract_scenario_heuristic(self, video_path: str, location_hint: str) -> VisualContextSummary:
