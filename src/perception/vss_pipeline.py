@@ -108,8 +108,8 @@ Output ONLY a STRICT JSON object with these exact keys:
         try:
             cmd = [
                 "ffmpeg", "-y",
-                "-i", video_path,
                 "-ss", str(timestamp_sec),
+                "-i", video_path,
                 "-vframes", "1",
                 "-vf", "scale=1280:-1",
                 "-q:v", "2",
@@ -126,24 +126,39 @@ Output ONLY a STRICT JSON object with these exact keys:
         return None
 
     def extract_raw_grayscale_thumbnail(self, video_path: str, timestamp_sec: float) -> Optional[bytes]:
-        """Extracts a tiny 32x32 raw grayscale thumbnail for ultra-fast motion differencing."""
+        """Extracts a 64x64 raw grayscale thumbnail for fast motion differencing."""
         try:
             cmd = [
                 "ffmpeg", "-y",
-                "-i", video_path,
                 "-ss", str(timestamp_sec),
+                "-i", video_path,
                 "-vframes", "1",
-                "-vf", "scale=32:32,format=gray",
+                "-vf", "scale=64:64,format=gray",
                 "-f", "rawvideo",
                 "-"
             ]
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
             raw_bytes, _ = proc.communicate(timeout=4)
-            if len(raw_bytes) == 32 * 32:
+            if len(raw_bytes) == 64 * 64:
                 return raw_bytes
         except Exception:
             pass
         return None
+
+    def _compute_anomaly_score(self, bytes_curr: bytes, bytes_prev: bytes) -> float:
+        """
+        Computes a localized anomaly score.
+        Ignores massive full-frame changes (like scene cuts or fades) by capping the max allowed changed pixels.
+        """
+        total_pixels = len(bytes_curr)
+        # Count pixels that changed significantly (ignores encoding noise)
+        changed_pixels = sum(1 for b1, b2 in zip(bytes_curr, bytes_prev) if abs(b1 - b2) > 20)
+        
+        # If >60% of the image changed, it's a camera cut/fade or full pan. Ignore it.
+        if changed_pixels > (total_pixels * 0.60):
+            return 0.0
+            
+        return (changed_pixels / total_pixels) * 100.0
 
     def scan_motion_and_anomaly_points(self, video_path: str) -> Tuple[bool, float, str]:
         """Hierarchical (Coarse-to-Fine) pixel differencing to locate exact anomaly moment rapidly."""
@@ -172,7 +187,7 @@ Output ONLY a STRICT JSON object with these exact keys:
         for i in range(1, len(coarse_thumbnails)):
             t_curr, bytes_curr = coarse_thumbnails[i]
             t_prev, bytes_prev = coarse_thumbnails[i - 1]
-            diff = sum(abs(b1 - b2) for b1, b2 in zip(bytes_curr, bytes_prev)) / len(bytes_curr)
+            diff = self._compute_anomaly_score(bytes_curr, bytes_prev)
             coarse_deltas.append((t_prev, t_curr, diff))
 
         # Find the window with the highest variance
@@ -201,7 +216,7 @@ Output ONLY a STRICT JSON object with these exact keys:
         for i in range(1, len(fine_thumbnails)):
             t_curr, bytes_curr = fine_thumbnails[i]
             _, bytes_prev = fine_thumbnails[i - 1]
-            diff = sum(abs(b1 - b2) for b1, b2 in zip(bytes_curr, bytes_prev)) / len(bytes_curr)
+            diff = self._compute_anomaly_score(bytes_curr, bytes_prev)
             fine_deltas.append((t_curr, diff))
 
         max_t, max_diff = max(fine_deltas, key=lambda x: x[1])
@@ -210,8 +225,8 @@ Output ONLY a STRICT JSON object with these exact keys:
         baseline_diffs = [d[2] for d in coarse_deltas if d[2] != best_coarse_diff]
         avg_diff = sum(baseline_diffs) / len(baseline_diffs) if baseline_diffs else best_coarse_diff
 
-        if max_diff > (avg_diff * 1.25) and max_diff > 8.0:
-            return True, max_t, f"Pixel motion variance spike detected (Δ={max_diff:.1f})"
+        if max_diff > (avg_diff * 1.25) and max_diff > 1.0:
+            return True, max_t, f"Localized spatial anomaly spike detected (Score={max_diff:.1f})"
 
         return False, max_t, "Continuous traffic flow"
 
