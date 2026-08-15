@@ -1,7 +1,7 @@
 import os
 import json
-from typing import Dict, Any, Optional, Union
-from src.perception.vss_pipeline import VSSPerceptionPipeline, VisualContextSummary
+from typing import Dict, Any, Optional, Union, Generator
+from src.perception.vss_pipeline import VSSPerceptionPipeline, VisualContextSummary, StreamFrameEvent
 from src.agents.hazmat_agent import HazmatAgent
 from src.agents.traffic_agent import TrafficAgent
 from src.agents.comms_agent import CommsAgent
@@ -56,3 +56,34 @@ class IncidentOrchestrator:
             "traffic": traffic_result,
             "dispatch_report": dispatch_report
         }
+
+    def stream_incident(
+        self,
+        video_path: str,
+        location_hint: str = "5th Ave & Market St Intersection",
+        speed_multiplier: float = 1.0
+    ) -> Generator[Dict[str, Any], None, None]:
+        """Streams live temporal edge monitoring from normal flow to autonomous multi-agent crisis response."""
+        for event in self.perception.stream_video_feed(video_path, location_hint=location_hint, speed_multiplier=speed_multiplier):
+            if event.status == "CRISIS_IMPACT" and event.visual_summary:
+                # Trigger full parallel multi-agent dispatch
+                full_dispatch = self.process_incident(event.visual_summary, location_hint=location_hint)
+                yield {
+                    "event_type": "CRISIS_DISPATCH_TRIGGERED",
+                    "timestamp": event.timestamp,
+                    "elapsed_seconds": event.elapsed_seconds,
+                    "status": event.status,
+                    "severity": event.severity,
+                    "scene_description": event.scene_description,
+                    "incident_record": full_dispatch
+                }
+            else:
+                yield {
+                    "event_type": "EDGE_MONITORING_FRAME",
+                    "timestamp": event.timestamp,
+                    "elapsed_seconds": event.elapsed_seconds,
+                    "status": event.status,
+                    "severity": event.severity,
+                    "scene_description": event.scene_description,
+                    "incident_record": None
+                }

@@ -1,10 +1,11 @@
 import os
 import json
+import time
 import base64
 import urllib.request
 import urllib.error
 from dataclasses import dataclass, field, asdict
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Generator
 from src.config.settings import settings
 
 @dataclass
@@ -18,9 +19,20 @@ class VisualContextSummary:
     hazard_indicators: List[str] = field(default_factory=list)
     raw_summary: str = ""
     confidence: float = 0.95
+    timestamp: str = "00:14"
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
+
+@dataclass
+class StreamFrameEvent:
+    """Temporal frame event during live continuous video monitoring."""
+    timestamp: str
+    elapsed_seconds: int
+    status: str  # "NORMAL_MONITORING", "ANOMALY_DETECTED", "CRISIS_IMPACT"
+    severity: str  # "LOW", "MEDIUM", "CRITICAL"
+    scene_description: str
+    visual_summary: Optional[VisualContextSummary] = None
 
 class VSSPerceptionPipeline:
     """Interfaces with NVIDIA Visual Storage & Search (VSS) and local Cosmos Reasoner 2 VLM."""
@@ -54,6 +66,46 @@ Do not include any conversational filler outside the JSON object."""
         except Exception:
             # Fallback to local heuristic extractor when running off-node
             return self._extract_scenario_heuristic(video_path, location_hint)
+
+    def stream_video_feed(
+        self,
+        video_path: str,
+        location_hint: str = "Highway 101 Exit 5",
+        speed_multiplier: float = 1.0
+    ) -> Generator[StreamFrameEvent, None, None]:
+        """Simulates live continuous video ingestion from pre-incident normal state to crash occurrence."""
+        timeline = [
+            (0, "00:00", "NORMAL_MONITORING", "LOW", "Camera feed active. Normal traffic flow at 45 mph. Road clear, 0 hazards."),
+            (3, "00:03", "NORMAL_MONITORING", "LOW", "Vehicles maintaining safe following distance. Surface dry, visibility 100%."),
+            (7, "00:07", "NORMAL_MONITORING", "LOW", "Commercial bulk transport tanker and sedans passing through intersection normally."),
+            (10, "00:10", "ANOMALY_DETECTED", "MEDIUM", "Sudden heavy braking detected in lane 2. Rapid vehicle deceleration observed."),
+            (12, "00:12", "ANOMALY_DETECTED", "MEDIUM", "Erratic lateral trajectory. Collision imminent between tanker and sedan."),
+            (14, "00:14", "CRISIS_IMPACT", "CRITICAL", "CRASH IMPACT DETECTED! Two vehicles involved. Ruptured tanker valve emitting dense greenish-yellow vapor cloud drifting southwest.")
+        ]
+
+        final_summary = self._extract_scenario_heuristic(video_path, location_hint)
+
+        for elapsed, ts, status, severity, desc in timeline:
+            time.sleep(1.0 / max(speed_multiplier, 0.1))
+            if status == "CRISIS_IMPACT":
+                final_summary.timestamp = ts
+                yield StreamFrameEvent(
+                    timestamp=ts,
+                    elapsed_seconds=elapsed,
+                    status=status,
+                    severity=severity,
+                    scene_description=desc,
+                    visual_summary=final_summary
+                )
+            else:
+                yield StreamFrameEvent(
+                    timestamp=ts,
+                    elapsed_seconds=elapsed,
+                    status=status,
+                    severity=severity,
+                    scene_description=desc,
+                    visual_summary=None
+                )
 
     def _query_live_cosmos_vlm(self, video_path: str, location_hint: str) -> VisualContextSummary:
         """Sends request to local Cosmos Reasoner NIM (OpenAI compatible vision endpoint)."""
@@ -92,7 +144,6 @@ Do not include any conversational filler outside the JSON object."""
     def parse_vlm_json_output(self, raw_response: str) -> VisualContextSummary:
         """Parses and validates raw VLM text output into the typed VisualContextSummary schema."""
         cleaned = raw_response.strip()
-        # Strip markdown json code block fences if present
         if cleaned.startswith("```json"):
             cleaned = cleaned[7:]
         if cleaned.startswith("```"):
