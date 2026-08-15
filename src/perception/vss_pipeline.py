@@ -3,6 +3,7 @@ import json
 import time
 import base64
 import subprocess
+import datetime
 import urllib.request
 import urllib.error
 from dataclasses import dataclass, field, asdict
@@ -20,7 +21,7 @@ class VisualContextSummary:
     hazard_indicators: List[str] = field(default_factory=list)
     raw_summary: str = ""
     confidence: float = 0.95
-    timestamp: str = "00:00"
+    timestamp: str = field(default_factory=lambda: datetime.datetime.now().strftime("%H:%M:%S"))
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -29,7 +30,7 @@ class VisualContextSummary:
 class StreamFrameEvent:
     """Temporal frame event during live continuous video monitoring."""
     timestamp: str
-    elapsed_seconds: int
+    elapsed_seconds: float
     status: str
     severity: str
     scene_description: str
@@ -61,6 +62,20 @@ Output a valid JSON object with keys: location, camera_id, crisis_type, severity
         except Exception:
             pass
         return "nvidia/cosmos-reason2-8b"
+
+    def get_video_duration(self, video_path: str) -> float:
+        """Dynamically retrieves the exact duration of any video file in seconds."""
+        try:
+            cmd = [
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                video_path
+            ]
+            out = subprocess.check_output(cmd, timeout=5).decode().strip()
+            return float(out)
+        except Exception:
+            return 15.0  # Safe default if ffprobe not available
 
     def extract_keyframes_base64(self, video_path: str, max_frames: int = 2) -> List[str]:
         """Extracts JPEG keyframes from video using ffmpeg."""
@@ -147,37 +162,36 @@ Output a valid JSON object with keys: location, camera_id, crisis_type, severity
         location_hint: str = "5th Ave & Market St Intersection",
         speed_multiplier: float = 1.0
     ) -> Generator[StreamFrameEvent, None, None]:
-        """Streams incident analysis in real time directly from Cosmos Reasoner."""
-        # 1. Immediate AI Analysis of the scene
+        """Streams real-time edge monitoring with live wall-clock timestamps and real video duration."""
+        start_time = time.time()
+        video_duration = self.get_video_duration(video_path)
+
+        # 1. Ingest camera stream connection with real live timestamp
+        live_ts = datetime.datetime.now().strftime("%H:%M:%S")
+        yield StreamFrameEvent(
+            timestamp=live_ts,
+            elapsed_seconds=0.0,
+            status="ACTIVE_INCIDENT_INGESTION",
+            severity="HIGH",
+            scene_description=f"Camera feed connected at {location_hint} ({video_duration:.1f}s stream). Running Cosmos VLM...",
+            visual_summary=None
+        )
+
+        # 2. Query Cosmos Reasoner live
         summary = self.process_video_file(video_path, location_hint)
+        elapsed = time.time() - start_time
+        summary.timestamp = datetime.datetime.now().strftime("%H:%M:%S")
 
-        timeline = [
-            (0, "00:00", "ACTIVE_INCIDENT_INGESTION", "HIGH", f"Camera stream connected: {location_hint}. Scanning scene..."),
-            (2, "00:02", "SCENE_ANALYZED", summary.severity, f"Cosmos VLM Detection: {summary.crisis_type} ({summary.vehicles_involved} vehicles involved)."),
-            (4, "00:04", "CRISIS_DISPATCH_ACTIVE", summary.severity, f"Active Incident: {summary.raw_summary}")
-        ]
-
-        for elapsed, ts, status, severity, desc in timeline:
-            time.sleep(0.8 / max(speed_multiplier, 0.1))
-            if status == "CRISIS_DISPATCH_ACTIVE":
-                summary.timestamp = ts
-                yield StreamFrameEvent(
-                    timestamp=ts,
-                    elapsed_seconds=elapsed,
-                    status="CRISIS_IMPACT",
-                    severity=severity,
-                    scene_description=desc,
-                    visual_summary=summary
-                )
-            else:
-                yield StreamFrameEvent(
-                    timestamp=ts,
-                    elapsed_seconds=elapsed,
-                    status=status,
-                    severity=severity,
-                    scene_description=desc,
-                    visual_summary=None
-                )
+        # 3. Yield detection event with exact live time and elapsed latency
+        live_ts = datetime.datetime.now().strftime("%H:%M:%S")
+        yield StreamFrameEvent(
+            timestamp=live_ts,
+            elapsed_seconds=round(elapsed, 2),
+            status="CRISIS_IMPACT",
+            severity=summary.severity,
+            scene_description=f"Cosmos VLM Edge Detection in {elapsed:.2f}s: {summary.raw_summary}",
+            visual_summary=summary
+        )
 
     def parse_vlm_json_output(self, raw_response: str) -> VisualContextSummary:
         """Parses and validates raw VLM text output into the typed VisualContextSummary schema."""
@@ -211,7 +225,8 @@ Output a valid JSON object with keys: location, camera_id, crisis_type, severity
                 vehicles_involved=vehicles_count,
                 hazard_indicators=list(data.get("hazard_indicators", [])),
                 raw_summary=data.get("raw_summary", raw_response[:250]),
-                confidence=float(data.get("confidence", 0.95))
+                confidence=float(data.get("confidence", 0.95)),
+                timestamp=datetime.datetime.now().strftime("%H:%M:%S")
             )
         except Exception:
             return VisualContextSummary(
@@ -222,7 +237,8 @@ Output a valid JSON object with keys: location, camera_id, crisis_type, severity
                 vehicles_involved=2,
                 hazard_indicators=["vehicle wreckage", "blocked roadway"],
                 raw_summary=raw_response,
-                confidence=0.95
+                confidence=0.95,
+                timestamp=datetime.datetime.now().strftime("%H:%M:%S")
             )
 
     def _extract_scenario_heuristic(self, video_path: str, location_hint: str) -> VisualContextSummary:
@@ -236,5 +252,6 @@ Output a valid JSON object with keys: location, camera_id, crisis_type, severity
             vehicles_involved=2,
             hazard_indicators=["vehicle wreckage", "blocked traffic"],
             raw_summary="Traffic collision blocking lanes requiring emergency dispatch.",
-            confidence=0.90
+            confidence=0.90,
+            timestamp=datetime.datetime.now().strftime("%H:%M:%S")
         )
