@@ -233,7 +233,8 @@ Output ONLY a STRICT JSON object with these exact keys:
     def extract_targeted_burst(self, video_path: str, center_t: float) -> List[Tuple[float, str]]:
         """Extracts high-density burst of frames around the exact anomaly moment."""
         duration = self.get_video_duration(video_path)
-        offsets = [-1.5, 0.0, 1.5, 3.0]
+        # Leveraging massive 65k context window: Extract 6 deep-context frames instead of 4
+        offsets = [-3.0, -1.5, 0.0, 1.5, 3.0, 4.5]
         timestamps = [max(0.2, min(duration - 0.2, center_t + offset)) for offset in offsets]
         timestamps = sorted(list(set([round(t, 2) for t in timestamps])))
 
@@ -267,7 +268,7 @@ Output ONLY a STRICT JSON object with these exact keys:
             "model": active_model,
             "messages": [{"role": "user", "content": content_elements}],
             "temperature": 0.1,
-            "max_tokens": 1024
+            "max_tokens": 2048 # Expanded capacity for deep reasoning
         }
 
         req = urllib.request.Request(
