@@ -234,8 +234,8 @@ Output ONLY a STRICT JSON object with these exact keys:
     def extract_targeted_burst(self, video_path: str, center_t: float) -> List[Tuple[float, str]]:
         """Extracts high-density burst of frames around the exact anomaly moment."""
         duration = self.get_video_duration(video_path)
-        # Leveraging massive 65k context window: Extract 6 deep-context frames instead of 4
-        offsets = [-3.0, -1.5, 0.0, 1.5, 3.0, 4.5]
+        # Reverted back to 4 frames so it safely fits within the 16k context window without connection resets
+        offsets = [-1.5, 0.0, 1.5, 3.0]
         timestamps = [max(0.2, min(duration - 0.2, center_t + offset)) for offset in offsets]
         timestamps = sorted(list(set([round(t, 2) for t in timestamps])))
 
@@ -283,16 +283,16 @@ Output ONLY a STRICT JSON object with these exact keys:
                 data = json.loads(resp.read().decode("utf-8"))
                 raw_text = data["choices"][0]["message"]["content"]
                 return self.parse_vlm_json_output(raw_text, location_hint)
-        except urllib.error.URLError as e:
-            print(f"\n\033[1;31m[CRITICAL] Connection to Cosmos VLM refused at {self.endpoint_url}.\033[0m")
-            print(f"\033[1;33mPlease ensure the NIM container has fully finished booting up (it can take 1-3 minutes to allocate the 65k context KV-cache). Check 'docker logs' to verify it is 'Running'.\033[0m\n")
+        except (urllib.error.URLError, ConnectionError) as e:
+            print(f"\n\033[1;31m[CRITICAL] Connection to Cosmos VLM failed: {e}.\033[0m")
+            print(f"\033[1;33mPlease ensure the NIM container has fully finished booting up and that your prompt size doesn't exceed NIM_MAX_MODEL_LEN.\033[0m\n")
             return VisualContextSummary(
                 location=location_hint or "Unknown",
                 camera_id="CAM-DGX-SPARK-01",
                 crisis_type="VLM_CONNECTION_OFFLINE",
                 severity="LOW",
                 vehicles_involved=0,
-                raw_summary="ERROR: The Vision-Language Model container is currently unreachable or still booting.",
+                raw_summary=f"ERROR: The Vision-Language Model container is currently unreachable. Reason: {e}",
                 confidence=0.0
             )
 
