@@ -1,6 +1,7 @@
 import sys
 import os
 import json
+import argparse
 from src.orchestrator.incident_manager import IncidentOrchestrator
 
 try:
@@ -22,19 +23,51 @@ def print_box(title: str, text: str, color_code: str = "36"):
         print(f"{border}\033[0m")
         print(text)
 
-def run_simulation():
-    title_banner = (
-        "Omni-Responder: DGX Spark 🚨⚡\n"
-        "Edge Vision Perception + Autonomous Multi-Agent Incident Dispatch\n"
-        "Target Hardware: NVIDIA Grace Blackwell DGX Spark (128GB Unified Memory)"
+def main():
+    parser = argparse.ArgumentParser(description="Omni-Responder DGX Spark: Autonomous Multi-Agent Incident Dispatch")
+    parser.add_argument(
+        "--video",
+        type=str,
+        default="data/video_clips/crash_scenario_1.mp4",
+        help="Path to the crisis .mp4 video file to analyze"
     )
-    print_box("System Initialization", title_banner, "36")
+    parser.add_argument(
+        "--location",
+        type=str,
+        default="5th Ave & Market St Intersection",
+        help="Location or camera name hint for the scene"
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Output raw machine JSON payload instead of terminal formatting"
+    )
+    args = parser.parse_args()
 
-    print("\n📡 Ingesting video stream from data/video_clips/crash_scenario_1.mp4 (100% On-Premise / 0% Cloud Egress)...")
-    
+    # Verify video path exists or fallback gracefully
+    if not os.path.exists(args.video):
+        # Check if user passed a relative filename in data/video_clips/
+        alt_path = os.path.join("data/video_clips", os.path.basename(args.video))
+        if os.path.exists(alt_path):
+            args.video = alt_path
+
+    if not args.json:
+        title_banner = (
+            "Omni-Responder: DGX Spark 🚨⚡\n"
+            "Edge Vision Perception + Autonomous Multi-Agent Incident Dispatch\n"
+            "Target Hardware: NVIDIA Grace Blackwell DGX Spark (128GB Unified Memory)"
+        )
+        print_box("System Initialization", title_banner, "36")
+        print(f"\n📡 Ingesting video stream from: {args.video}")
+        print(f"📍 Location hint: {args.location}")
+        print("🔒 Privacy Guarantee: 100% On-Premise DGX Spark (0% Cloud Video Egress)")
+
     orchestrator = IncidentOrchestrator()
-    # Process crash video through perception + sub-agents
-    result = orchestrator.process_incident("data/video_clips/crash_scenario_1.mp4", location_hint="5th Ave & Market St Intersection")
+    result = orchestrator.process_incident(args.video, location_hint=args.location)
+
+    if args.json:
+        print(json.dumps(result, indent=2))
+        return
 
     # 1. Perception Output (Cosmos Reasoner VLM)
     p = result["perception"]
@@ -85,4 +118,4 @@ def run_simulation():
     print("\n\033[1;32m✔ All autonomous edge actions completed in parallel on DGX Spark (0ms Cloud Latency).\033[0m\n")
 
 if __name__ == "__main__":
-    run_simulation()
+    main()
