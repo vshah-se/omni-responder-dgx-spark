@@ -163,7 +163,7 @@ Output a STRICT JSON object:
         content_elements = [
             {
                 "type": "text",
-                "text": f"{self.STAGE2_DEEP_PROMPT}\n\nLocation Hint: {location_hint}\nChronological frame sequence:"
+                "text": f"{self.STAGE2_DEEP_PROMPT}\n\nChronological frame sequence:"
             }
         ]
 
@@ -188,7 +188,7 @@ Output a STRICT JSON object:
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             raw_text = data["choices"][0]["message"]["content"]
-            return self.parse_vlm_json_output(raw_text)
+            return self.parse_vlm_json_output(raw_text, location=location_hint)
 
     def stream_video_feed(
         self,
@@ -288,7 +288,7 @@ Output a STRICT JSON object:
                 pass
         return self._extract_scenario_heuristic(video_path, location_hint)
 
-    def parse_vlm_json_output(self, raw_response: str) -> VisualContextSummary:
+    def parse_vlm_json_output(self, raw_response: str, location: str = "") -> VisualContextSummary:
         """Parses raw VLM output with robust grounding against hallucinations."""
         cleaned = raw_response.strip()
         if "```json" in cleaned:
@@ -348,7 +348,10 @@ Output a STRICT JSON object:
                 vehicles_count = int(raw_vehicles)
 
             return VisualContextSummary(
-                location=data.get("location", "5th Ave & Market St Intersection"),
+                # Camera location is registry metadata supplied by the caller, never
+                # inferred by the VLM. Falls back to the model's field only if the
+                # caller supplied nothing.
+                location=location or data.get("location", "Unknown Camera Location"),
                 camera_id=str(data.get("camera_id", "CAM-DGX-SPARK-01")),
                 crisis_type=raw_crisis_type,
                 severity=severity_str,
@@ -360,7 +363,7 @@ Output a STRICT JSON object:
             )
         except Exception:
             return VisualContextSummary(
-                location="5th Ave & Market St Intersection",
+                location=location or "Unknown Camera Location",
                 camera_id="CAM-DGX-SPARK-01",
                 crisis_type="Roadside Scene Observation",
                 severity="MEDIUM",
