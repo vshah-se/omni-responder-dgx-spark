@@ -1,16 +1,17 @@
 import os
 import json
 import time
-import mimetypes
+import base64
+import subprocess
 import urllib.request
 import urllib.error
 from dataclasses import dataclass, field, asdict
-from typing import Dict, Any, List, Optional, Generator, Tuple
+from typing import Dict, Any, List, Optional, Generator
 from src.config.settings import settings
 
 @dataclass
 class VisualContextSummary:
-    """Standardized JSON schema emitted by Hacker 1 Perception track for Hacker 2 Orchestrator."""
+    """Standardized JSON schema emitted by Cosmos Reasoner VLM for the Orchestrator."""
     location: str
     camera_id: str = "CAM-DGX-SPARK-01"
     crisis_type: str = "Physical Emergency Incident"
@@ -29,96 +30,121 @@ class StreamFrameEvent:
     """Temporal frame event during live continuous video monitoring."""
     timestamp: str
     elapsed_seconds: int
-    status: str  # "NORMAL_MONITORING", "ANOMALY_DETECTED", "CRISIS_IMPACT"
-    severity: str  # "LOW", "MEDIUM", "CRITICAL"
+    status: str
+    severity: str
     scene_description: str
     visual_summary: Optional[VisualContextSummary] = None
 
 class VSSPerceptionPipeline:
-    """Interfaces with NVIDIA Visual Storage & Search (VSS) and local Cosmos Reasoner 2 VLM."""
+    """Interfaces directly with NVIDIA Cosmos Reasoner 2 VLM running on Port 30082."""
 
-    SYSTEM_PROMPT = """You are an edge-native Emergency Incident Perception Agent running on NVIDIA DGX Spark.
-Analyze the video scene and output a STRICT JSON object with these exact keys:
+    SYSTEM_PROMPT = """You are an autonomous Emergency Dispatch Vision Agent running locally on NVIDIA DGX Spark.
+Carefully examine the provided video frames of the physical incident.
+You must output ONLY a valid JSON object with these exact keys:
 {
-  "location": "string (e.g. 5th Ave & Market St Intersection)",
+  "location": "string (physical location hint or intersection)",
   "camera_id": "string",
-  "crisis_type": "string (e.g. Multi-vehicle collision with chemical tanker breach)",
+  "crisis_type": "string (what exact physical event occurred)",
   "severity": "CRITICAL" | "HIGH" | "MEDIUM" | "LOW",
   "vehicles_involved": integer,
-  "hazard_indicators": ["string", "string"],
-  "raw_summary": "string (2-3 sentence detailed physical description)",
+  "hazard_indicators": ["list of visible hazards like smoke, fire, leaked liquids, wreckage, placards"],
+  "raw_summary": "detailed 2-3 sentence visual summary describing exactly what is seen in the frames",
   "confidence": float (0.0 to 1.0)
 }
-Do not include any conversational filler outside the JSON object."""
+Do not include markdown or conversational commentary outside the JSON object."""
 
     def __init__(self, endpoint_url: Optional[str] = None, model_name: str = "nvidia/cosmos-reason2-8b"):
-        self.endpoint_url = endpoint_url or settings.vss_endpoint_url
+        # Port 30082 is the live Cosmos Reasoner NIM container on DGX Spark
+        self.endpoint_url = endpoint_url or os.getenv("COSMOS_VLM_URL", "http://localhost:30082/v1")
         self.model_name = model_name
 
-    def process_video_file(self, video_path: str, location_hint: str = "Traffic Intersection Cam #402") -> VisualContextSummary:
-        """Uploads a local .mp4/.mov video file programmatically to VSS / Cosmos Reasoner NIM."""
+    def extract_keyframes_base64(self, video_path: str, max_frames: int = 4) -> List[str]:
+        """Extracts representative JPEG keyframes from video using ffmpeg or direct binary sampling."""
+        frames_b64 = []
+        
+        # Try extracting clean frames via ffmpeg if available on host
+        try:
+            cmd = [
+                "ffmpeg", "-i", video_path,
+                "-vf", f"fps=1/{max(1, max_frames)}",
+                "-vframes", str(max_frames),
+                "-f", "image2pipe",
+                "-vcodec", "mjpeg",
+                "-"
+            ]
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            out, _ = proc.communicate(timeout=10)
+            
+            # Split MJPEG stream by JPEG markers
+            raw_jpegs = out.split(b"\xff\xd8")
+            for chunk in raw_jpegs[1:]:
+                jpeg_bytes = b"\xff\xd8" + chunk
+                if len(jpeg_bytes) > 1000:
+                    frames_b64.append(base64.b64encode(jpeg_bytes).decode("utf-8"))
+        except Exception:
+            pass
+
+        return frames_b64
+
+    def process_video_file(self, video_path: str, location_hint: str = "5th Ave & Market St Intersection") -> VisualContextSummary:
+        """Sends real video keyframes to the live Cosmos Reasoner VLM on Port 30082."""
         if not os.path.exists(video_path):
             raise FileNotFoundError(f"Video file not found at: {video_path}")
 
-        # 1. Attempt programmatic upload to VSS REST API on DGX Spark
+        # 1. Attempt live query to Cosmos Reasoner NIM on Port 30082
         try:
-            return self._upload_to_vss_api(video_path, location_hint)
-        except Exception:
-            # 2. Fallback to local heuristic extractor if Spark endpoint is unreachable
+            return self._query_live_cosmos_vlm(video_path, location_hint)
+        except Exception as e:
+            # If NIM container is temporarily unreachable, use offline fallback
+            print(f"\033[1;33m[WARN] Cosmos VLM on {self.endpoint_url} unreachable ({e}). Using heuristic.\033[0m")
             return self._extract_scenario_heuristic(video_path, location_hint)
 
-    def _upload_to_vss_api(self, video_path: str, location_hint: str) -> VisualContextSummary:
-        """Programmatically uploads video bytes to VSS / VIOS gateway and triggers Cosmos Reasoner."""
-        filename = os.path.basename(video_path)
-        content_type = mimetypes.guess_type(video_path)[0] or "video/mp4"
+    def _query_live_cosmos_vlm(self, video_path: str, location_hint: str) -> VisualContextSummary:
+        """Calls OpenAI-compatible /v1/chat/completions on Cosmos Reasoner NIM."""
+        url = f"{self.endpoint_url}/chat/completions"
+        frames_b64 = self.extract_keyframes_base64(video_path, max_frames=3)
 
-        # Construct multipart/form-data payload using standard library
-        boundary = f"----WebKitFormBoundary{int(time.time()*1000)}"
-        body = []
-
-        # Add location prompt field
-        body.append(f"--{boundary}".encode("utf-8"))
-        body.append(f'Content-Disposition: form-data; name="prompt"'.encode("utf-8"))
-        body.append(b"")
-        body.append(f"Analyze this incident at {location_hint}. Output strict JSON for emergency dispatch.".encode("utf-8"))
-
-        # Add video file field
-        body.append(f"--{boundary}".encode("utf-8"))
-        body.append(f'Content-Disposition: form-data; name="file"; filename="{filename}"'.encode("utf-8"))
-        body.append(f"Content-Type: {content_type}".encode("utf-8"))
-        body.append(b"")
-        with open(video_path, "rb") as f:
-            body.append(f.read())
-
-        body.append(f"--{boundary}--".encode("utf-8"))
-        body.append(b"")
-        payload = b"\r\n".join(body)
-
-        # Try VSS upload endpoints
-        endpoints = [
-            f"{self.endpoint_url}/api/v1/chat",
-            f"{self.endpoint_url}/api/chat",
-            f"{self.endpoint_url}/api/v1/videos/upload",
-            f"{self.endpoint_url}/v1/chat/completions"
+        content_elements = [
+            {
+                "type": "text",
+                "text": f"Incident location: {location_hint}. Analyze these video frames and output the emergency dispatch JSON."
+            }
         ]
 
-        for url in endpoints:
-            try:
-                req = urllib.request.Request(
-                    url,
-                    data=payload,
-                    headers={
-                        "Content-Type": f"multipart/form-data; boundary={boundary}",
-                        "User-Agent": "Omni-Responder-Client/1.0"
-                    }
-                )
-                with urllib.request.urlopen(req, timeout=30) as resp:
-                    raw_text = resp.read().decode("utf-8")
-                    return self.parse_vlm_json_output(raw_text)
-            except Exception:
-                continue
+        if frames_b64:
+            for b64 in frames_b64:
+                content_elements.append({
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{b64}"}
+                })
+        else:
+            # If ffmpeg not present, pass raw video container reference
+            with open(video_path, "rb") as f:
+                sample_b64 = base64.b64encode(f.read(1024 * 1024 * 2)).decode("utf-8")
+            content_elements.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:video/mp4;base64,{sample_b64}"}
+            })
 
-        raise ConnectionError(f"Could not complete programmatic upload to {self.endpoint_url}")
+        payload = {
+            "model": self.model_name,
+            "messages": [
+                {"role": "system", "content": self.SYSTEM_PROMPT},
+                {"role": "user", "content": content_elements}
+            ],
+            "temperature": 0.1,
+            "max_tokens": 1024
+        }
+
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            raw_text = data["choices"][0]["message"]["content"]
+            return self.parse_vlm_json_output(raw_text)
 
     def stream_video_feed(
         self,
@@ -130,10 +156,10 @@ Do not include any conversational filler outside the JSON object."""
         timeline = [
             (0, "00:00", "NORMAL_MONITORING", "LOW", "Camera feed active. Normal traffic flow at 45 mph. Road clear, 0 hazards."),
             (3, "00:03", "NORMAL_MONITORING", "LOW", "Vehicles maintaining safe following distance. Surface dry, visibility 100%."),
-            (7, "00:07", "NORMAL_MONITORING", "LOW", "Commercial bulk transport tanker and sedans passing through intersection normally."),
+            (7, "00:07", "NORMAL_MONITORING", "LOW", "Traffic passing through intersection normally. Zero anomalies."),
             (10, "00:10", "ANOMALY_DETECTED", "MEDIUM", "Sudden heavy braking detected in lane 2. Rapid vehicle deceleration observed."),
-            (12, "00:12", "ANOMALY_DETECTED", "MEDIUM", "Erratic lateral trajectory. Collision imminent between tanker and sedan."),
-            (14, "00:14", "CRISIS_IMPACT", "CRITICAL", "CRASH IMPACT DETECTED! Two vehicles involved. Ruptured tanker valve emitting dense greenish-yellow vapor cloud drifting southwest.")
+            (12, "00:12", "ANOMALY_DETECTED", "MEDIUM", "Erratic trajectory detected. Impact imminent."),
+            (14, "00:14", "CRISIS_IMPACT", "CRITICAL", "CRASH IMPACT DETECTED! Analyzing real video frames on DGX Spark...")
         ]
 
         final_summary = self.process_video_file(video_path, location_hint)
@@ -147,7 +173,7 @@ Do not include any conversational filler outside the JSON object."""
                     elapsed_seconds=elapsed,
                     status=status,
                     severity=severity,
-                    scene_description=desc,
+                    scene_description=f"CRASH IMPACT! {final_summary.raw_summary}",
                     visual_summary=final_summary
                 )
             else:
@@ -174,62 +200,25 @@ Do not include any conversational filler outside the JSON object."""
         data = json.loads(cleaned)
         return VisualContextSummary(
             location=data.get("location", "Unknown Location"),
-            camera_id=data.get("camera_id", "CAM-01"),
+            camera_id=data.get("camera_id", "CAM-DGX-SPARK-01"),
             crisis_type=data.get("crisis_type", "Emergency Incident"),
             severity=data.get("severity", "HIGH"),
-            vehicles_involved=int(data.get("vehicles_involved", 0)),
+            vehicles_involved=int(data.get("vehicles_involved", 1)),
             hazard_indicators=list(data.get("hazard_indicators", [])),
             raw_summary=data.get("raw_summary", ""),
             confidence=float(data.get("confidence", 0.95))
         )
 
     def _extract_scenario_heuristic(self, video_path: str, location_hint: str) -> VisualContextSummary:
-        """Deterministic fallback extractor for offline testing of crash video scenarios."""
+        """Offline fallback only when Spark NIM is unreachable."""
         filename = os.path.basename(video_path).lower()
-
-        if "11387588" in filename or "scenario_1" in filename or "crash_1" in filename:
-            return VisualContextSummary(
-                location=location_hint,
-                camera_id="CAM-402-HWY",
-                crisis_type="Commercial collision with hazardous chemical breach",
-                severity="CRITICAL",
-                vehicles_involved=2,
-                hazard_indicators=["green chemical leak", "dense vapor cloud near ground", "corroded tanker fitting"],
-                raw_summary="Two-vehicle collision between a commercial tanker and passenger vehicle. "
-                            "Ruptured rear outlet valve leaking dense greenish-yellow vapor cloud drifting across lanes.",
-                confidence=0.97
-            )
-        elif "4686100" in filename or "scenario_2" in filename or "crash_2" in filename:
-            return VisualContextSummary(
-                location=location_hint,
-                camera_id="CAM-108-INTERSECTION",
-                crisis_type="Multi-vehicle highway pileup with fuel spill",
-                severity="HIGH",
-                vehicles_involved=3,
-                hazard_indicators=["clear to amber liquid pool", "rainbow sheen", "heavy fuel vapors"],
-                raw_summary="Multi-vehicle highway pileup resulting in an overturned trailer. "
-                            "Flammable liquid fuel pool spreading across two lanes with active ignition risk.",
-                confidence=0.94
-            )
-        elif "crash_3" in filename:
-            return VisualContextSummary(
-                location=location_hint,
-                camera_id="CAM-305-CROSSWAY",
-                crisis_type="High-speed multi-car intersection collision with structural fire hazard",
-                severity="CRITICAL",
-                vehicles_involved=2,
-                hazard_indicators=["dense dark smoke", "active engine flames", "ruptured fuel lines"],
-                raw_summary="Severe front-quarter intersection impact causing engine compartment ignition and dense smoke plume.",
-                confidence=0.96
-            )
-        else:
-            return VisualContextSummary(
-                location=location_hint,
-                camera_id="CAM-DEFAULT",
-                crisis_type="Physical traffic collision",
-                severity="HIGH",
-                vehicles_involved=2,
-                hazard_indicators=["vehicle wreckage", "blocked traffic"],
-                raw_summary="Traffic collision blocking multiple lanes requiring emergency response.",
-                confidence=0.90
-            )
+        return VisualContextSummary(
+            location=location_hint,
+            camera_id="CAM-OFFLINE-MOCK",
+            crisis_type="Physical traffic collision",
+            severity="HIGH",
+            vehicles_involved=2,
+            hazard_indicators=["vehicle wreckage", "blocked traffic"],
+            raw_summary="Traffic collision blocking lanes requiring emergency dispatch.",
+            confidence=0.90
+        )
