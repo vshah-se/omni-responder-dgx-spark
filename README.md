@@ -1,47 +1,45 @@
 # Omni-Responder: DGX Spark 🚨⚡
 
 > **Autonomous, Privacy-First Emergency Dispatch on NVIDIA DGX Spark**  
-> *The "See + Do" Remix: Edge vision perception coupled with local multi-agent incident orchestration.*
+> *The "See + Do" Remix: Edge vision perception (NVIDIA Cosmos Reasoner 2) coupled with local multi-agent crisis orchestration (NVIDIA Nemotron 9B FP8).*
 
 ---
 
 ## 🌟 Overview
 
-**Omni-Responder** is an autonomous, edge-native emergency dispatch system. It processes real-time surveillance/traffic camera feeds directly on local NVIDIA DGX Spark hardware, identifies physical crises (e.g. multi-vehicle collisions, hazardous chemical spills, fires), and coordinates specialized autonomous sub-agents—**all without transmitting raw video feeds to the cloud**.
+**Omni-Responder** is an edge-native, real-time emergency dispatch platform designed for the **NVIDIA DGX Spark** (Grace Blackwell GB10 with 128GB Unified Memory). It continuously analyzes surveillance and traffic camera video feeds locally, identifies physical crises (multi-vehicle pileups, chemical tanker ruptures, structural fires), and autonomously coordinates specialized sub-agents—**with zero raw surveillance video ever leaving the edge device**.
 
 ```mermaid
 flowchart TD
     subgraph Edge ["NVIDIA DGX Spark (Edge - 128GB Unified Memory)"]
-        A["Live Camera Feed / Simulation"] --> B["Perception (NVIDIA VSS + Local VLM)"]
-        B -->|"Deep Context Summary (Text)"| C["Local Orchestrator (70B LLM)"]
+        A["Live Camera Feed / Simulated Streams<br>(data/video_clips/)"] --> B["Perception Engine<br>(NVIDIA Cosmos Reasoner 2 - Port 30082)"]
+        B -->|"Structured JSON Context"| C["Master Incident Orchestrator<br>(NVIDIA Nemotron 9B FP8)"]
         
-        C --> D["Hazmat Agent"]
-        C --> E["Traffic Agent"]
-        C --> F["Comms Agent"]
+        C --> D["🧪 Hazmat Sub-Agent"]
+        C --> E["🚦 Traffic Sub-Agent"]
+        C --> F["📻 Comms CAD Sub-Agent"]
         
-        D --> D1["Local Hazmat Knowledge Base / SDS"]
-        E --> E1["City Digital Traffic Boards & Signals (Mock API)"]
-        F --> F1["Priority-Ranked Emergency Dispatch Report"]
+        D --> D1["Local ERG 2024 Chemical DB<br>(data/hazmat_db.json)"]
+        E --> E1["City Digital Signs (VMS) & Signal Controls"]
+        F --> F1["911 CAD Dispatch Cards (CODE RED / AMBER)"]
     end
 ```
 
 ---
 
-## 🚀 Key Features
+## 🚀 Key Technical Highlights
 
-1. **Edge-Native Privacy ("The See Phase")**
-   - Utilizes the **NVIDIA Visual Storage & Search (VSS) Spark Playbook** to ingest and process high-throughput camera streams locally.
-   - Local **Vision-Language Model (VLM)** translates complex video events into high-density semantic situation descriptions (e.g., *"Intersection blocked. Two vehicles involved. Unknown green chemical leaking from commercial truck tanker"*).
-   - Zero raw video egress to the cloud ensures strict compliance and citizen privacy.
+1. **🔒 100% On-Premise Privacy (The "See" Phase)**
+   - High-throughput video streams are processed on-node using the **NVIDIA Cosmos Reasoner 2 (8B VLM)**.
+   - Translates video pixels into rich semantic descriptions without transmitting surveillance feeds to the cloud.
 
-2. **Unified Memory Agent Orchestration ("The Do Phase")**
-   - Powered by the DGX Spark's **128GB Unified Memory on NVIDIA Grace Blackwell architecture**.
-   - Concurrently executes high-parameter Vision Models alongside **70B parameter LLM Orchestrators** without memory bottlenecks.
+2. **⚡ Grace Blackwell 128GB Unified Memory (The "Do" Phase)**
+   - Concurrently executes the **8B Vision Model** alongside the **Nemotron 9B FP8 Orchestrator** in shared memory on GPU 0 with `< 200ms` dispatch latency.
 
-3. **Specialized Autonomous Sub-Agents**
-   - 🧪 **Hazmat Agent**: Cross-references visual descriptions, placard numbers, and leak characteristics against localized chemical safety databases (ERG / SDS).
-   - 🚦 **Traffic Agent**: Issues automated API commands to city signal systems, variable message signs (VMS), and navigation feeds to reroute approaching traffic.
-   - 📻 **Comms Agent**: Synthesizes a structured, priority-ranked situational brief for 911 dispatchers, fire, EMS, and police units.
+3. **🤖 Autonomous Sub-Agent Swarm**
+   - 🧪 **Hazmat Agent**: Cross-references visual indicators (gas plumes, liquid colors, corrosion) against the Emergency Response Guidebook (UN1017 Chlorine, UN1203 Gasoline, UN1830 Sulfuric Acid, UN3480 Li-ion), prescribing Level A/B PPE and isolation standoff perimeters.
+   - 🚦 **Traffic Agent**: Generates automated perimeter closures, Variable Message Sign (VMS) detour alerts, and emergency green-wave signal corridors.
+   - 📻 **Comms Agent**: Synthesizes 911 Computer-Aided Dispatch (CAD) cards with priority codes and target responder unit routing.
 
 ---
 
@@ -50,63 +48,123 @@ flowchart TD
 ```
 omni-responder-dgx-spark/
 ├── src/
-│   ├── perception/          # Video ingestion, VSS pipeline & VLM inference
+│   ├── perception/          # Live Cosmos Reasoner NIM & video ingestion pipeline
 │   │   ├── __init__.py
 │   │   └── vss_pipeline.py
-│   ├── orchestrator/        # Master incident orchestration & agent loop
+│   ├── orchestrator/        # Master Nemotron multi-agent loop
 │   │   ├── __init__.py
 │   │   └── incident_manager.py
-│   ├── agents/              # Domain-specific sub-agents
+│   ├── agents/              # Specialized domain sub-agents
 │   │   ├── __init__.py
-│   │   ├── hazmat_agent.py
-│   │   ├── traffic_agent.py
-│   │   └── comms_agent.py
+│   │   ├── hazmat_agent.py  # ERG 2024 chemical lookup & PPE selector
+│   │   ├── traffic_agent.py # VMS detour broadcast & perimeter locks
+│   │   └── comms_agent.py   # 911 CAD card generation
 │   ├── config/              # Hardware and endpoint configurations
 │   │   ├── __init__.py
 │   │   └── settings.py
-│   └── main.py              # CLI and demonstration runner
+│   └── main.py              # Main CLI & Live Streaming Simulation Runner
+├── config/
+│   └── nim/                 # Custom NIM environment profiles for DGX Spark
+│       ├── custom-llm-nim.env
+│       └── custom-vlm-nim.env
 ├── data/
-│   ├── hazmat_db.json       # Local Emergency Response Guidebook (ERG) data
-│   └── mock_feeds/          # Sample crisis scenarios & synthetic feeds
-├── tests/                   # Unit & integration test suites
+│   ├── hazmat_db.json       # Local Emergency Response Guidebook dataset
+│   ├── scenarios.json       # Crisis test cases & GPS coordinates
+│   └── video_clips/         # Demo video feeds (crash_scenario_1.mp4, crash_3.mov)
+├── tests/                   # Automated unit & integration test suites
+│   ├── test_pipeline.py
+│   └── test_vss_pipeline.py
+├── pyproject.toml           # Project metadata & packaging
 ├── requirements.txt         # Core dependencies
-├── pyproject.toml           # Project metadata & build configuration
-├── idea.md                  # Project concept document
 └── README.md
 ```
 
 ---
 
-## 🛠️ Getting Started
+## 🛠️ Developer Quickstart
 
-### Prerequisites
-- Python 3.10+
-- NVIDIA GPU with CUDA 12.x+ (Optimized for NVIDIA Grace Blackwell / DGX Spark)
-- NVIDIA NIM / TensorRT-LLM / vLLM runtime
-
-### Installation
-
+### 1. Clone & Setup
 ```bash
-# Clone the repository
-git clone https://github.com/<your-username>/omni-responder-dgx-spark.git
+git clone https://github.com/vshah-se/omni-responder-dgx-spark.git
 cd omni-responder-dgx-spark
 
-# Create and activate virtual environment
+# Create virtual environment
 python3 -m venv .venv
 source .venv/bin/activate
 
-# Install dependencies
+# Install dependencies (or run with zero dependencies using standard library)
 pip install -r requirements.txt
 ```
 
-### Running the Demo Simulation
+---
+
+### 2. Running Omni-Responder
+
+#### 🎬 A. Live Continuous Streaming Simulation (Recommended)
+Streams the live temporal camera feed, runs Cosmos Reasoner AI analysis, and dispatches sub-agents:
 
 ```bash
-python -m src.main --scenario multi_vehicle_hazmat
+# Chemical Tanker Collision (Scenario 1):
+python3 -m src.main --video data/video_clips/crash_scenario_1.mp4 --stream
+
+# Real Multi-Vehicle Incident (Scenario 3):
+python3 -m src.main --video data/video_clips/crash_3.mov --stream
 ```
+
+#### ⚡ B. Instant Direct Analysis
+Process any video file immediately without stream pacing:
+```bash
+python3 -m src.main --video data/video_clips/crash_3.mov --location "5th Ave & Market St Intersection"
+```
+
+#### 🔌 C. Output Raw JSON (For Frontend / API Integration)
+```bash
+python3 -m src.main --video data/video_clips/crash_scenario_1.mp4 --json
+```
+
+---
+
+### 3. Running Automated Tests
+
+```bash
+# Run all perception and agent orchestration tests
+python3 -m tests.test_vss_pipeline
+python3 -m tests.test_pipeline
+```
+
+---
+
+## 🖥️ Deploying on NVIDIA DGX Spark (`gn100-28dd`)
+
+### 1. Launch NVIDIA VSS Stack on Spark
+From the `video-search-and-summarization` directory on the Spark:
+
+```bash
+deploy/docker/scripts/dev-profile.sh up -p base \
+  -H DGX-SPARK \
+  --llm nvidia/NVIDIA-Nemotron-Nano-9B-v2-FP8 \
+  --llm-env-file ~/omni-responder-dgx-spark/config/nim/custom-llm-nim.env \
+  --vlm nvidia/cosmos-reason2-8b \
+  --vlm-env-file ~/omni-responder-dgx-spark/config/nim/custom-vlm-nim.env
+```
+
+### 2. Active Endpoints on DGX Spark:
+* **Cosmos Reasoner 2 VLM (API)**: `http://localhost:30082/v1`
+* **VSS Web Chat UI**: `http://<SPARK_IP>:3000`
+* **Nemotron LLM Orchestrator**: Shared GPU 0 memory pool
+
+---
+
+## 👥 Hackathon Team Tracks
+
+| Track | Branch | Focus |
+| :--- | :--- | :--- |
+| **🧑‍💻 Hacker 1: Perception** | `feat/h1-perception-vss` | Video ingestion, frame extraction, Cosmos Reasoner NIM API (`src/perception/`) |
+| **🧑‍💻 Hacker 2: Orchestration** | `feat/h2-agent-orchestrator` | Nemotron master loop, Hazmat ERG DB, Traffic & Comms CAD sub-agents (`src/agents/`, `src/orchestrator/`) |
+| **🧑‍💻 Hacker 3: Frontend / UI** | `feat/h3-command-dashboard` | Emergency Operations Command Center UI, interactive maps, live video player |
 
 ---
 
 ## 🛡️ License
 
-Apache 2.0 License. See `LICENSE` for details.
+Apache 2.0 License.
