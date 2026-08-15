@@ -7,7 +7,7 @@ import datetime
 import urllib.request
 import urllib.error
 from dataclasses import dataclass, field, asdict
-from typing import Dict, Any, List, Optional, Generator
+from typing import Dict, Any, List, Optional, Generator, Tuple
 from src.config.settings import settings
 
 @dataclass
@@ -39,10 +39,25 @@ class StreamFrameEvent:
 class VSSPerceptionPipeline:
     """Interfaces directly with NVIDIA Cosmos Reasoner 2 VLM running on Port 30082."""
 
-    SYSTEM_PROMPT = """You are an autonomous Emergency Incident Vision Agent running locally on NVIDIA DGX Spark.
-Analyze the video scene frames. Describe the physical incident, vehicles involved, hazards (fluids, fire, smoke, damage), and severity.
-Output a valid JSON object with keys: location, camera_id, crisis_type, severity, vehicles_involved, hazard_indicators, raw_summary, confidence.
-If there are no accidents or immediate hazards, set severity to "LOW" or "MEDIUM" and hazard_indicators to []."""
+    SYSTEM_PROMPT = """You are an autonomous Emergency Incident Vision Agent running on NVIDIA DGX Spark.
+You are given a chronological sequence of video frames sampled across the ENTIRE duration of a camera feed (from start to finish).
+Carefully inspect the full temporal progression across all frames:
+1. Did a traffic collision, vehicle impact, chemical spill, fire, or hazard occur at ANY point in the sequence?
+2. If an incident occurred, identify all vehicles involved, damage, smoke/flames/fluids, and severity.
+3. If the entire sequence shows only normal driving with no accidents, set severity to "LOW", crisis_type to "Normal Traffic Flow", and hazard_indicators to [].
+
+Output a STRICT valid JSON object with these exact keys:
+{
+  "location": "string",
+  "camera_id": "string",
+  "crisis_type": "string (e.g. Collision / Chemical Spill / Normal Flow)",
+  "severity": "CRITICAL" | "HIGH" | "MEDIUM" | "LOW",
+  "vehicles_involved": integer,
+  "hazard_indicators": ["list of visible hazards like smoke, fire, fluid leak, wreckage, or empty if none"],
+  "raw_summary": "detailed 2-3 sentence visual summary describing the progression and outcome across the frames",
+  "confidence": float (0.0 to 1.0)
+}
+Output ONLY the JSON object without commentary."""
 
     def __init__(self, endpoint_url: Optional[str] = None, model_name: Optional[str] = None):
         self.endpoint_url = endpoint_url or os.getenv("COSMOS_VLM_URL", "http://localhost:30082/v1")
@@ -74,37 +89,41 @@ If there are no accidents or immediate hazards, set severity to "LOW" or "MEDIUM
                 video_path
             ]
             out = subprocess.check_output(cmd, timeout=5).decode().strip()
-            return float(out)
+            return max(1.0, float(out))
         except Exception:
             return 15.0
 
-    def extract_keyframes_base64(self, video_path: str, max_frames: int = 2) -> List[str]:
-        """Extracts JPEG keyframes from video using ffmpeg."""
-        frames_b64 = []
-        try:
-            cmd = [
-                "ffmpeg", "-y", "-i", video_path,
-                "-vf", "fps=0.5,scale=640:-1",
-                "-vframes", str(max_frames),
-                "-f", "image2pipe",
-                "-vcodec", "mjpeg",
-                "-"
-            ]
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-            out, _ = proc.communicate(timeout=10)
-            
-            raw_jpegs = out.split(b"\xff\xd8")
-            for chunk in raw_jpegs[1:]:
-                jpeg_bytes = b"\xff\xd8" + chunk
-                if len(jpeg_bytes) > 2000:
-                    frames_b64.append(base64.b64encode(jpeg_bytes).decode("utf-8"))
-        except Exception:
-            pass
+    def extract_full_video_keyframes(self, video_path: str, num_frames: int = 8) -> List[Tuple[float, str]]:
+        """Evenly samples keyframes across the ENTIRE duration of the video file with timestamps."""
+        duration = self.get_video_duration(video_path)
+        frames_with_ts = []
 
-        return frames_b64
+        # Calculate evenly spaced sample timestamps across duration (e.g. at 10%, 25%, 40%, 60%, 75%, 90%)
+        sample_times = [round((i + 0.5) * (duration / num_frames), 2) for i in range(num_frames)]
+
+        for t in sample_times:
+            try:
+                cmd = [
+                    "ffmpeg", "-y", "-ss", str(t),
+                    "-i", video_path,
+                    "-vframes", "1",
+                    "-vf", "scale=640:-1",
+                    "-f", "image2pipe",
+                    "-vcodec", "mjpeg",
+                    "-"
+                ]
+                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                out, _ = proc.communicate(timeout=8)
+                if len(out) > 1000:
+                    b64 = base64.b64encode(out).decode("utf-8")
+                    frames_with_ts.append((t, b64))
+            except Exception:
+                continue
+
+        return frames_with_ts
 
     def process_video_file(self, video_path: str, location_hint: str = "5th Ave & Market St Intersection") -> VisualContextSummary:
-        """Sends real video keyframes to the live Cosmos Reasoner VLM on Port 30082."""
+        """Sends full temporal keyframe sequence to the live Cosmos Reasoner VLM on Port 30082."""
         if not os.path.exists(video_path):
             raise FileNotFoundError(f"Video file not found at: {video_path}")
 
@@ -119,24 +138,36 @@ If there are no accidents or immediate hazards, set severity to "LOW" or "MEDIUM
             return self._extract_scenario_heuristic(video_path, location_hint)
 
     def _query_live_cosmos_vlm(self, video_path: str, location_hint: str) -> VisualContextSummary:
-        """Calls OpenAI-compatible /v1/chat/completions on Cosmos Reasoner NIM."""
+        """Calls OpenAI-compatible /v1/chat/completions with full chronological sequence."""
         url = f"{self.endpoint_url}/chat/completions"
         active_model = self._get_active_model_name()
-        frames_b64 = self.extract_keyframes_base64(video_path, max_frames=2)
+        duration = self.get_video_duration(video_path)
+        
+        # Sample 6-8 frames across the entire video
+        frames_with_ts = self.extract_full_video_keyframes(video_path, num_frames=6)
 
-        prompt_text = (
+        prompt_intro = (
             f"{self.SYSTEM_PROMPT}\n\n"
-            f"Incident Location: {location_hint}.\n"
-            f"Analyze these frames and respond with the JSON object."
+            f"Location Hint: {location_hint}\n"
+            f"Total Video Duration: {duration:.1f} seconds. Below are {len(frames_with_ts)} chronological frames sampled across the full video:"
         )
 
-        content_elements = [{"type": "text", "text": prompt_text}]
+        content_elements = [{"type": "text", "text": prompt_intro}]
 
-        for b64 in frames_b64:
+        for t_sec, b64 in frames_with_ts:
+            content_elements.append({
+                "type": "text",
+                "text": f"[Frame Timestamp T={t_sec:.1f}s / {duration:.1f}s]:"
+            })
             content_elements.append({
                 "type": "image_url",
                 "image_url": {"url": f"data:image/jpeg;base64,{b64}"}
             })
+
+        content_elements.append({
+            "type": "text",
+            "text": "Analyze the full temporal progression above. Output the strict JSON object now."
+        })
 
         payload = {
             "model": active_model,
@@ -152,7 +183,7 @@ If there are no accidents or immediate hazards, set severity to "LOW" or "MEDIUM
             data=json.dumps(payload).encode("utf-8"),
             headers={"Content-Type": "application/json"}
         )
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=45) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             raw_text = data["choices"][0]["message"]["content"]
             return self.parse_vlm_json_output(raw_text)
@@ -174,17 +205,18 @@ If there are no accidents or immediate hazards, set severity to "LOW" or "MEDIUM
             elapsed_seconds=0.0,
             status="ACTIVE_STREAM_INGESTION",
             severity="NORMAL",
-            scene_description=f"Camera feed connected at {location_hint} ({video_duration:.1f}s stream). Scanning scene with Cosmos VLM...",
+            scene_description=f"Edge Camera active at {location_hint} ({video_duration:.1f}s feed). Sampling temporal frames across video for Cosmos VLM...",
             visual_summary=None
         )
 
-        # 2. Query Cosmos Reasoner live
+        # 2. Query Cosmos Reasoner across full video duration
         summary = self.process_video_file(video_path, location_hint)
         elapsed = time.time() - start_time
         summary.timestamp = datetime.datetime.now().strftime("%H:%M:%S")
 
         # 3. Determine event status based on severity
-        status_label = "CRISIS_IMPACT" if summary.severity in ["CRITICAL", "HIGH"] else "ROUTINE_SCENE_MONITORED"
+        is_crisis = summary.severity in ["CRITICAL", "HIGH", "SEVERE"]
+        status_label = "CRISIS_IMPACT_DETECTED" if is_crisis else "SCENE_MONITORED_NORMAL"
         live_ts = datetime.datetime.now().strftime("%H:%M:%S")
 
         yield StreamFrameEvent(
@@ -220,10 +252,10 @@ If there are no accidents or immediate hazards, set severity to "LOW" or "MEDIUM
             raw_summary_text = data.get("raw_summary", raw_response[:250])
             hazard_list = list(data.get("hazard_indicators", []))
 
-            # Smart severity classification if the text says "no accidents / normal congestion"
-            if any(phrase in raw_summary_text.lower() for phrase in ["no accidents", "no immediate hazards", "typical urban traffic", "no visible signs of accidents", "traffic congestion"]):
+            # Smart severity normalization
+            if any(phrase in raw_summary_text.lower() for phrase in ["no accidents", "no visible signs of collision", "no immediate hazards", "typical urban traffic", "no signs of collision or damage"]):
                 if not hazard_list:
-                    raw_sev = "MEDIUM" if "congestion" in raw_summary_text.lower() else "LOW"
+                    raw_sev = "LOW"
 
             if raw_sev in ["SEVERE", "CRITICAL"]:
                 severity_str = "CRITICAL"
@@ -237,7 +269,7 @@ If there are no accidents or immediate hazards, set severity to "LOW" or "MEDIUM
             return VisualContextSummary(
                 location=data.get("location", "5th Ave & Market St Intersection"),
                 camera_id=str(data.get("camera_id", "CAM-DGX-SPARK-01")),
-                crisis_type=data.get("crisis_type", "Traffic Flow Observation"),
+                crisis_type=data.get("crisis_type", "Traffic Observation"),
                 severity=severity_str,
                 vehicles_involved=vehicles_count,
                 hazard_indicators=hazard_list,
