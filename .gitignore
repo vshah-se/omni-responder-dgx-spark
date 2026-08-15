@@ -38,11 +38,12 @@ models/weights/
 *.bin
 *.safetensors
 
-# Media & Video Streams
+# Media & Large Video Streams (Ignored by default except demo clip)
 *.mp4
 *.avi
 *.mov
 *.mkv
+!data/video_clips/crash_scenario_1.mp4
 data/raw_feeds/
 recordings/
 
