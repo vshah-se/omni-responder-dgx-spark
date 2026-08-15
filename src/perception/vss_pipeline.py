@@ -111,7 +111,7 @@ Output ONLY a STRICT JSON object with these exact keys:
                 "-ss", str(timestamp_sec),
                 "-i", video_path,
                 "-vframes", "1",
-                "-vf", "scale=1280:-1",
+                "-vf", "scale=854:-1",
                 "-q:v", "2",
                 "-f", "image2pipe",
                 "-vcodec", "mjpeg",
