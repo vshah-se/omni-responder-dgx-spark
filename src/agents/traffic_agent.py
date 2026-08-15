@@ -8,6 +8,7 @@ class TrafficAgent:
 
     def dispatch_reroute(self, location: str, isolation_radius_meters: int, severity: str = "LOW") -> Dict[str, Any]:
         severity_upper = severity.upper()
+        sign_location = location.upper()
 
         if severity_upper in ["LOW", "NORMAL"]:
             # Routine traffic flow: No closures, no emergency reroutes
@@ -16,7 +17,7 @@ class TrafficAgent:
                 "closure_id": "TRAFFIC-FLOW-NORMAL",
                 "isolation_radius_meters": 0,
                 "actions_triggered": [
-                    f"VMS Board: 'ALL CLEAR - NORMAL TRAFFIC FLOW AT {location.upper()}'",
+                    f"Digital VMS: 'ALL CLEAR - NORMAL TRAFFIC FLOW AT {sign_location}'",
                     "Traffic Signals: Standard timed cycle active",
                     "Navigation Advisory: 0m restriction (Normal operations)"
                 ]
@@ -29,7 +30,7 @@ class TrafficAgent:
                 "closure_id": f"FLOW-OPT-{len(self.active_closures) + 101}",
                 "isolation_radius_meters": 0,
                 "actions_triggered": [
-                    f"VMS Board: 'CAUTION: SLOW TRAFFIC / VEHICLE ON SHOULDER AT {location.upper()}'",
+                    f"Digital VMS: 'CAUTION: SLOW TRAFFIC / VEHICLE ON SHOULDER AT {sign_location}'",
                     "Traffic Signals: Adaptive green phase extended +15s",
                     "Navigation Advisory: Suggest alternate arterials to prevent backup"
                 ]
@@ -38,7 +39,7 @@ class TrafficAgent:
         # Emergency road closures for real critical accidents and hazmat breaches
         closure_id = f"ROUTE-BLOCK-{len(self.active_closures) + 101}"
         actions = [
-            f"VMS Board #104: 'INCIDENT AT {location.upper()} - AVOID AREA - USE DETOUR'",
+            f"Digital VMS: 'INCIDENT AT {sign_location} - AVOID AREA - USE DETOUR'",
             f"Traffic Signals: Green wave priority corridor enabled for emergency responders",
             f"Navigation Advisory: Broadcast geofenced perimeter lock ({isolation_radius_meters}m isolation zone)"
         ]

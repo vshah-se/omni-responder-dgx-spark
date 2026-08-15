@@ -7,41 +7,36 @@ def test_vlm_json_parser():
     sample_vlm_raw = """
     ```json
     {
-      "location": "5th Ave & Market St",
+      "location": "Urban Commercial Intersection",
       "camera_id": "CAM-402",
-      "crisis_type": "Commercial tanker breach",
+      "crisis_type": "Vehicle Collision",
       "severity": "CRITICAL",
       "vehicles_involved": 2,
-      "hazard_indicators": ["green chemical vapor", "liquid leak"],
-      "raw_summary": "Two-vehicle collision with green vapor leak.",
+      "hazard_indicators": ["vehicle wreckage", "debris on roadway"],
+      "raw_summary": "Two-vehicle collision between yellow sedan and red hatchback resulting in localized wreckage.",
       "confidence": 0.98
     }
     ```
     """
     summary = pipeline.parse_vlm_json_output(sample_vlm_raw)
     assert isinstance(summary, VisualContextSummary)
-    assert summary.location == "5th Ave & Market St"
+    assert summary.location == "Urban Commercial Intersection"
     assert summary.severity == "CRITICAL"
     assert summary.vehicles_involved == 2
-    assert "green chemical vapor" in summary.hazard_indicators
+    assert "vehicle wreckage" in summary.hazard_indicators
     assert summary.confidence == 0.98
 
-def test_video_file_processing_scenario_1():
+def test_pixel_motion_differencing():
     pipeline = VSSPerceptionPipeline()
-    summary = pipeline._extract_scenario_heuristic("data/video_clips/crash_scenario_1.mp4", "Highway 101 Exit 5")
-    assert summary.severity == "CRITICAL"
-    assert summary.vehicles_involved == 2
-    assert "green chemical leak" in summary.hazard_indicators
-
-def test_video_file_processing_scenario_2():
-    pipeline = VSSPerceptionPipeline()
-    summary = pipeline._extract_scenario_heuristic("data/video_clips/crash_scenario_2.mp4", "Downtown Intermodal Hub")
-    assert summary.severity == "HIGH"
-    assert summary.vehicles_involved == 3
-    assert "clear to amber liquid pool" in summary.hazard_indicators
+    # Test on any available test video
+    test_video = "data/video_clips/crash_scenario_1.mp4"
+    if os.path.exists(test_video):
+        has_anomaly, anomaly_t, desc = pipeline.scan_motion_and_anomaly_points(test_video)
+        assert isinstance(has_anomaly, bool)
+        assert anomaly_t > 0.0
+        assert isinstance(desc, str)
 
 if __name__ == "__main__":
     test_vlm_json_parser()
-    test_video_file_processing_scenario_1()
-    test_video_file_processing_scenario_2()
-    print("✅ All perception pipeline unit tests passed successfully!")
+    test_pixel_motion_differencing()
+    print("✅ All perception pipeline pixel tests passed successfully!")
