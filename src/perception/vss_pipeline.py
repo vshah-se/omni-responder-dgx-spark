@@ -101,8 +101,9 @@ Output ONLY a STRICT JSON object with these exact keys:
         """Extracts a high-definition JPEG frame at a specific timestamp as base64."""
         try:
             cmd = [
-                "ffmpeg", "-y", "-ss", str(timestamp_sec),
+                "ffmpeg", "-y",
                 "-i", video_path,
+                "-ss", str(timestamp_sec),
                 "-vframes", "1",
                 "-vf", "scale=1280:-1",
                 "-q:v", "2",
@@ -122,8 +123,9 @@ Output ONLY a STRICT JSON object with these exact keys:
         """Extracts a tiny 32x32 raw grayscale thumbnail for ultra-fast motion differencing."""
         try:
             cmd = [
-                "ffmpeg", "-y", "-ss", str(timestamp_sec),
+                "ffmpeg", "-y",
                 "-i", video_path,
+                "-ss", str(timestamp_sec),
                 "-vframes", "1",
                 "-vf", "scale=32:32,format=gray",
                 "-f", "rawvideo",
@@ -256,11 +258,7 @@ Output ONLY a STRICT JSON object with these exact keys:
         target_t = anomaly_t if has_anomaly else duration * 0.5
         burst_frames = self.extract_targeted_burst(video_path, target_t)
         
-        try:
-            summary = self.deep_sequence_diagnosis(burst_frames, location_hint)
-        except Exception:
-            summary = self._extract_scenario_heuristic(video_path, location_hint)
-
+        summary = self.deep_sequence_diagnosis(burst_frames, location_hint)
         summary.camera_id = camera_id
         summary.timestamp = datetime.datetime.now().strftime("%H:%M:%S")
 
@@ -286,11 +284,8 @@ Output ONLY a STRICT JSON object with these exact keys:
         _, anomaly_t, _ = self.scan_motion_and_anomaly_points(video_path)
         burst_frames = self.extract_targeted_burst(video_path, anomaly_t)
         if burst_frames:
-            try:
-                return self.deep_sequence_diagnosis(burst_frames, location_hint)
-            except Exception:
-                pass
-        return self._extract_scenario_heuristic(video_path, location_hint)
+            return self.deep_sequence_diagnosis(burst_frames, location_hint)
+        raise RuntimeError(f"Failed to extract frames from video stream: {video_path}")
 
     def parse_vlm_json_output(self, raw_response: str, location_hint: Optional[str] = None) -> VisualContextSummary:
         """Parses and preserves exact visual reasoning from Cosmos Reasoner with zero overwrites."""
@@ -358,16 +353,4 @@ Output ONLY a STRICT JSON object with these exact keys:
                 timestamp=datetime.datetime.now().strftime("%H:%M:%S")
             )
 
-    def _extract_scenario_heuristic(self, video_path: str, location_hint: Optional[str] = None) -> VisualContextSummary:
-        """Offline fallback only when Spark NIM is unreachable."""
-        return VisualContextSummary(
-            location=location_hint or "Roadway Surveillance Scene",
-            camera_id="CAM-OFFLINE-MOCK",
-            crisis_type="Physical Emergency Incident",
-            severity="HIGH",
-            vehicles_involved=2,
-            hazard_indicators=["vehicle wreckage", "blocked traffic"],
-            raw_summary="Physical incident detected on roadway camera feed requiring emergency response.",
-            confidence=0.90,
-            timestamp=datetime.datetime.now().strftime("%H:%M:%S")
-        )
+
