@@ -276,10 +276,24 @@ Output ONLY a STRICT JSON object with these exact keys:
             data=json.dumps(payload).encode("utf-8"),
             headers={"Content-Type": "application/json"}
         )
-        with urllib.request.urlopen(req, timeout=35) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            raw_text = data["choices"][0]["message"]["content"]
-            return self.parse_vlm_json_output(raw_text, location_hint)
+        
+        try:
+            with urllib.request.urlopen(req, timeout=35) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                raw_text = data["choices"][0]["message"]["content"]
+                return self.parse_vlm_json_output(raw_text, location_hint)
+        except urllib.error.URLError as e:
+            print(f"\n\033[1;31m[CRITICAL] Connection to Cosmos VLM refused at {self.endpoint_url}.\033[0m")
+            print(f"\033[1;33mPlease ensure the NIM container has fully finished booting up (it can take 1-3 minutes to allocate the 65k context KV-cache). Check 'docker logs' to verify it is 'Running'.\033[0m\n")
+            return VisualContextSummary(
+                location=location_hint or "Unknown",
+                camera_id="CAM-DGX-SPARK-01",
+                crisis_type="VLM_CONNECTION_OFFLINE",
+                severity="LOW",
+                vehicles_involved=0,
+                raw_summary="ERROR: The Vision-Language Model container is currently unreachable or still booting.",
+                confidence=0.0
+            )
 
     def stream_video_feed(
         self,
