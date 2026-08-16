@@ -20,9 +20,12 @@ import argparse
 import asyncio
 import json
 import pathlib
+import shutil
+import subprocess
+import sys
 from datetime import datetime, timezone
 
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, Form, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -32,7 +35,9 @@ app = FastAPI(title="Omni-Responder Bus")
 
 clients: set[WebSocket] = set()
 history: list[dict] = []          # replayed to late joiners so a reconnect isn't a blank screen
-CFG = {"fixture": None, "speed": 1.0, "loop": False, "replay": True}
+CFG = {"fixture": None, "speed": 1.0, "loop": False, "replay": True, "port": 8080}
+RUN = {"proc": None, "video": None, "started": None}      # at most one analysis at a time
+VIDEO_EXT = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
 
 
 async def broadcast(event: dict) -> None:
@@ -102,6 +107,90 @@ async def reset():
     return {"ok": True}
 
 
+def _safe_video(raw: str) -> pathlib.Path:
+    """Resolve a user-supplied path and refuse anything outside the repo.
+
+    The dashboard hands this straight to a subprocess, so an unchecked path
+    would let anyone on the network point it at arbitrary files."""
+    p = pathlib.Path(raw).expanduser()
+    if not p.is_absolute():
+        p = (REPO / p)
+    p = p.resolve()
+    if p.suffix.lower() not in VIDEO_EXT:
+        raise ValueError(f"not a video file: {p.suffix or 'no extension'}")
+    if not p.is_file():
+        raise ValueError(f"no such file: {p}")
+    if REPO.resolve() not in p.parents:
+        raise ValueError("path must be inside the project directory")
+    return p
+
+
+@app.post("/upload")
+async def upload(file: UploadFile = File(...)):
+    """Accept a video from the browser and drop it in dashboard/clips/."""
+    name = pathlib.Path(file.filename or "upload.mp4").name
+    if pathlib.Path(name).suffix.lower() not in VIDEO_EXT:
+        return JSONResponse({"ok": False, "error": "unsupported file type"}, status_code=400)
+    dest = HERE / "clips" / name
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with dest.open("wb") as out:
+        shutil.copyfileobj(file.file, out)
+    return {"ok": True, "path": str(dest.relative_to(REPO)),
+            "url": f"/clips/{name}", "mb": round(dest.stat().st_size / 1e6, 1)}
+
+
+@app.get("/run-status")
+async def run_status():
+    proc = RUN["proc"]
+    return {"running": bool(proc and proc.poll() is None),
+            "video": RUN["video"], "started": RUN["started"]}
+
+
+@app.post("/stop")
+async def stop():
+    proc = RUN["proc"]
+    if proc and proc.poll() is None:
+        proc.terminate()
+        return {"ok": True, "stopped": True}
+    return {"ok": True, "stopped": False}
+
+
+@app.post("/run")
+async def run(request: Request):
+    """Launch adapter.py against the chosen video. This is what makes the picker
+    a control surface rather than just a player."""
+    body = await request.json()
+    try:
+        video = _safe_video(body.get("path", ""))
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+
+    proc = RUN["proc"]
+    if proc and proc.poll() is None:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+    history.clear()
+    await broadcast({"kind": "control", "payload": {"action": "reset"}})
+
+    cmd = [sys.executable, str(HERE / "adapter.py"),
+           "--video", str(video),
+           "--bus", f"http://127.0.0.1:{CFG['port']}/ingest"]
+    for flag in ("lat", "lon", "wind_from", "location"):
+        if body.get(flag) not in (None, ""):
+            cmd += [f"--{flag.replace('_', '-')}", str(body[flag])]
+
+    RUN["proc"] = subprocess.Popen(cmd, cwd=str(REPO),
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+    RUN["video"] = str(video.relative_to(REPO.resolve()))
+    RUN["started"] = datetime.now(timezone.utc).isoformat()
+    print(f"[run] {' '.join(cmd)}")
+    return {"ok": True, "video": RUN["video"]}
+
+
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
     await ws.accept()
@@ -163,5 +252,6 @@ if __name__ == "__main__":
     ap.add_argument("--host", default="0.0.0.0")
     args = ap.parse_args()
 
-    CFG.update(fixture=args.fixture, speed=args.speed, loop=args.loop, replay=args.replay)
+    CFG.update(fixture=args.fixture, speed=args.speed, loop=args.loop,
+               replay=args.replay, port=args.port)
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
