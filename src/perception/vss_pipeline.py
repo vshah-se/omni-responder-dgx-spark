@@ -1,8 +1,10 @@
 import os
-import json
+import sys
 import re
+import json
 import time
 import base64
+import hashlib
 import subprocess
 import datetime
 import urllib.request
@@ -141,25 +143,7 @@ Output ONLY a STRICT JSON object with these exact keys, in this order:
             pass
         return None
 
-    def extract_raw_grayscale_thumbnail(self, video_path: str, timestamp_sec: float) -> Optional[bytes]:
-        """Extracts a 64x64 raw grayscale thumbnail for fast motion differencing."""
-        try:
-            cmd = [
-                "ffmpeg", "-y",
-                "-ss", str(timestamp_sec),
-                "-i", video_path,
-                "-vframes", "1",
-                "-vf", "scale=64:64,format=gray",
-                "-f", "rawvideo",
-                "-"
-            ]
-            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-            raw_bytes, _ = proc.communicate(timeout=4)
-            if len(raw_bytes) == 64 * 64:
-                return raw_bytes
-        except Exception:
-            pass
-        return None
+
 
     def extract_grayscale_series(self, video_path: str, sample_fps: Optional[float] = None) -> List[Tuple[float, bytes]]:
         """Decodes the entire feed once into 64x64 grayscale thumbnails.
@@ -268,7 +252,6 @@ Output ONLY a STRICT JSON object with these exact keys, in this order:
         Kept for the dashboard adapter and stream narration; ranking lives in
         rank_incident_candidates().
         """
-        import sys
         sys.stderr.write("[Incident Scanner] Decoding feed and scoring persistent change...\n")
         candidates = self.rank_incident_candidates(video_path)
         if not candidates:
@@ -286,7 +269,6 @@ Output ONLY a STRICT JSON object with these exact keys, in this order:
         highest-scoring moment may be heavy traffic while the incident sits elsewhere.
         Quiet footage therefore costs one VLM call, and only ambiguous footage escalates.
         """
-        import sys
         candidates = self.rank_incident_candidates(video_path)
         if not candidates:
             candidates = [(self.get_video_duration(video_path) * 0.5, 0.0)]
@@ -317,7 +299,16 @@ Output ONLY a STRICT JSON object with these exact keys, in this order:
             return first_summary
         if failed_summary is not None:
             return failed_summary
-        raise RuntimeError(f"Failed to extract frames from video stream: {video_path}")
+        # All frame extractions failed (corrupt file, disk error) — return safely instead of crashing
+        return VisualContextSummary(
+            location=location_hint or "Unknown",
+            camera_id=self.camera_id_for(video_path),
+            crisis_type="FRAME_EXTRACTION_FAILED",
+            severity="LOW",
+            vehicles_involved=0,
+            raw_summary=f"ERROR: Could not extract any frames from feed. The file may be corrupt or unreadable.",
+            confidence=0.0
+        )
 
     def extract_targeted_burst(self, video_path: str, center_t: float) -> List[Tuple[float, str]]:
         """Extracts high-density burst of frames around the exact anomaly moment."""
@@ -374,7 +365,6 @@ Output ONLY a STRICT JSON object with these exact keys, in this order:
         except Exception as e:
             # A socket timeout raises TimeoutError, which is neither URLError nor
             # ConnectionError, so a slow NIM used to crash the whole run mid-demo.
-            import sys
             sys.stderr.write(f"\n\033[1;31m[WARN] Cosmos VLM probe failed ({type(e).__name__}): {e}\033[0m\n")
             sys.stderr.write("\033[1;33mCheck the NIM container is running and the prompt fits NIM_MAX_MODEL_LEN.\033[0m\n")
             return VisualContextSummary(
@@ -401,9 +391,17 @@ Output ONLY a STRICT JSON object with these exact keys, in this order:
         return False
 
     def camera_id_for(self, video_path: str) -> str:
-        """Edge camera identity derived from the feed filename. The VLM invents a generic
-        camera name from the pixels, so both entry points must overwrite it with this."""
-        return f"CAM-EDGE-{os.path.basename(video_path).split('.')[0].upper()}"
+        """Stable edge camera identity derived from a SHA-1 hash of the first 8KB of video content.
+
+        Using the filename is bogus engineering — the camera's identity must come from
+        what it records, not what someone named the file on disk.
+        """
+        try:
+            with open(video_path, "rb") as f:
+                digest = hashlib.sha1(f.read(8192)).hexdigest()[:8].upper()
+            return f"CAM-EDGE-{digest}"
+        except Exception:
+            return "CAM-EDGE-UNKNOWN"
 
     def stream_video_feed(
         self,
@@ -434,18 +432,18 @@ Output ONLY a STRICT JSON object with these exact keys, in this order:
             yield StreamFrameEvent(
                 timestamp=live_ts,
                 elapsed_seconds=anomaly_t,
+                # Neutral status: pixel scanner detected change, VLM has not yet confirmed severity
                 status="ANOMALY_DETECTED",
-                severity="HIGH",
-                scene_description=f"[T={anomaly_t:.1f}s] ANOMALY DETECTED: {anomaly_desc}. Capturing high-definition burst frames...",
+                severity="LOW",
+                scene_description=f"[T={anomaly_t:.1f}s] Sustained scene change detected. Dispatching Cosmos VLM probes...",
                 visual_summary=None
             )
 
-        target_t = anomaly_t if has_anomaly else duration * 0.5
         summary = self.analyze_incident(video_path, location_hint)
         summary.camera_id = camera_id
         summary.timestamp = datetime.datetime.now().strftime("%H:%M:%S")
 
-        # Route status dynamically from Cosmos Reasoner's output
+        # Route status dynamically from Cosmos Reasoner's confirmed output only
         if summary.severity in ["CRITICAL", "HIGH", "SEVERE"]:
             final_status = "CRISIS_IMPACT"
         elif summary.severity in ["MEDIUM", "MODERATE"]:
@@ -455,7 +453,7 @@ Output ONLY a STRICT JSON object with these exact keys, in this order:
 
         yield StreamFrameEvent(
             timestamp=summary.timestamp,
-            elapsed_seconds=target_t,
+            elapsed_seconds=anomaly_t if has_anomaly else duration * 0.5,
             status=final_status,
             severity=summary.severity,
             scene_description=f"Cosmos Reasoner Diagnosis: {summary.raw_summary}",
@@ -562,7 +560,7 @@ Output ONLY a STRICT JSON object with these exact keys, in this order:
             return VisualContextSummary(
                 location=location_hint or "Roadway Surveillance Scene",
                 camera_id="CAM-DGX-SPARK-01",
-                crisis_type="VLM_RESPONSE_UNPARSED",
+                crisis_type="VLM_PARSE_ERROR",
                 severity="LOW",
                 vehicles_involved=0,
                 hazard_indicators=[],
