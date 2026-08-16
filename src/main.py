@@ -99,6 +99,16 @@ def print_rich_incident_report(record: Dict[str, Any]):
         cad_text.append(f"CAD Briefing:\n{dispatch.get('briefing_summary')}", style="white")
         console.print(Panel(cad_text, title="📻 4. Comms Sub-Agent (911 CAD Dispatch)", border_style=colors["border"]))
 
+        # 5. Telegram Notifier status line
+        tg = record.get("telegram_dispatch", {})
+        tg_status = tg.get("status", "DISABLED")
+        if tg_status == "SENT":
+            console.print(f"📨 [bold green]Telegram Dispatch: SENT[/bold green] (simulated resource callout, message_id={tg.get('message_id')})")
+        elif tg_status == "DISABLED":
+            console.print(f"📨 [dim]Telegram Dispatch: disabled ({tg.get('detail')})[/dim]")
+        else:
+            console.print(f"📨 [bold red]Telegram Dispatch: FAILED ({tg.get('detail')})[/bold red]")
+
         console.print(f"\n{colors['icon']} [bold green]Autonomous Edge Processing Complete.[/bold green] Video preserved on-node (0 bytes sent to cloud).\n")
 
     else:
@@ -110,6 +120,8 @@ def print_rich_incident_report(record: Dict[str, Any]):
         print(f"Hazmat: {hazmat.get('chemical_name')} ({hazmat.get('un_number')}) - PPE: {hazmat.get('ppe_required')}")
         print(f"Traffic: {traffic.get('status')} ({traffic.get('closure_id')})")
         print(f"CAD Dispatch: {dispatch.get('dispatch_code')} -> {dispatch.get('status_description')}")
+        tg = record.get("telegram_dispatch", {})
+        print(f"Telegram Dispatch: {tg.get('status', 'DISABLED')}")
         print("="*70 + "\n")
 
 def run_live_stream_simulation(video_path: str, location: Optional[str], speed: float):

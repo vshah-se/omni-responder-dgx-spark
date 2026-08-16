@@ -54,3 +54,6 @@ recordings/
 *.swp
 *.swo
 .gemini/
+
+# Telegram credentials (never commit)
+config/telegram.env
