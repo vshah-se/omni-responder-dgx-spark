@@ -9,7 +9,7 @@ class CommsAgent:
         hazmat_status = hazmat_data.get("status", "NO_HAZARDS_DETECTED")
         crisis_type = perception_data.get("crisis_type", "Normal Traffic Flow")
 
-        timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         cad_incident_id = f"CAD-EMG-{datetime.datetime.now().strftime('%H%M%S')}"
 
         is_roadside = any(term in crisis_type.lower() for term in ["roadside", "shoulder", "towing", "disabled"])
