@@ -40,3 +40,23 @@ if __name__ == "__main__":
     test_vlm_json_parser()
     test_pixel_motion_differencing()
     print("✅ All perception pipeline pixel tests passed successfully!")
+
+
+def test_camera_id_derived_from_filename():
+    """The VLM invents a generic camera name; both entry points must overwrite it."""
+    p = VSSPerceptionPipeline()
+    assert p.camera_id_for("data/video_clips/aic21_80.mp4") == "CAM-EDGE-AIC21_80"
+    assert p.camera_id_for("/abs/path/scenario_1.mp4") == "CAM-EDGE-SCENARIO_1"
+
+
+def test_process_video_file_overwrites_generic_vlm_camera_id(monkeypatch):
+    """Plain (non-stream) mode previously leaked the VLM's 'edge_surveillance_camera'."""
+    p = VSSPerceptionPipeline()
+    monkeypatch.setattr(p, "scan_motion_and_anomaly_points", lambda v: (True, 1.0, "x"))
+    monkeypatch.setattr(p, "extract_targeted_burst", lambda v, t: [(1.0, "fakeb64")])
+    monkeypatch.setattr(
+        p, "deep_sequence_diagnosis",
+        lambda frames, hint=None: VisualContextSummary(camera_id="edge_surveillance_camera")
+    )
+    summary = p.process_video_file("data/video_clips/aic21_80.mp4")
+    assert summary.camera_id == "CAM-EDGE-AIC21_80"

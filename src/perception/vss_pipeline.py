@@ -296,6 +296,11 @@ Output ONLY a STRICT JSON object with these exact keys:
                 confidence=0.0
             )
 
+    def camera_id_for(self, video_path: str) -> str:
+        """Edge camera identity derived from the feed filename. The VLM invents a generic
+        camera name from the pixels, so both entry points must overwrite it with this."""
+        return f"CAM-EDGE-{os.path.basename(video_path).split('.')[0].upper()}"
+
     def stream_video_feed(
         self,
         video_path: str,
@@ -306,7 +311,7 @@ Output ONLY a STRICT JSON object with these exact keys:
         duration = self.get_video_duration(video_path)
         has_anomaly, anomaly_t, anomaly_desc = self.scan_motion_and_anomaly_points(video_path)
 
-        camera_id = f"CAM-EDGE-{os.path.basename(video_path).split('.')[0].upper()}"
+        camera_id = self.camera_id_for(video_path)
 
         live_ts = datetime.datetime.now().strftime("%H:%M:%S")
         yield StreamFrameEvent(
@@ -360,7 +365,9 @@ Output ONLY a STRICT JSON object with these exact keys:
         _, anomaly_t, _ = self.scan_motion_and_anomaly_points(video_path)
         burst_frames = self.extract_targeted_burst(video_path, anomaly_t)
         if burst_frames:
-            return self.deep_sequence_diagnosis(burst_frames, location_hint)
+            summary = self.deep_sequence_diagnosis(burst_frames, location_hint)
+            summary.camera_id = self.camera_id_for(video_path)
+            return summary
         raise RuntimeError(f"Failed to extract frames from video stream: {video_path}")
 
     def parse_vlm_json_output(self, raw_response: str, location_hint: Optional[str] = None) -> VisualContextSummary:
