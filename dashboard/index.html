@@ -630,8 +630,13 @@ function onPerception(p){
     $("maptag").textContent = p.location.name||"fix acquired"; }
   if(p.wind?.from_deg!=null) W.wind = p.wind.from_deg;
   if(Array.isArray(p.boxes)) drawBoxes(p.boxes);
-  if(p.clip_time!=null && vid.readyState>0 && Math.abs(vid.currentTime-p.clip_time)>1.2){
-    vid.currentTime = p.clip_time; vid.play().catch(()=>{});
+  // Seeking and playing are separate concerns. They used to be one condition, so the
+  // first perception of a run (clip_time 0.0 against a video parked at 0.0) had zero
+  // drift, failed the >1.2 test, and never called play() — the clip sat on a still
+  // frame until an event arrived far enough along to trip the drift check.
+  if(p.clip_time!=null && vid.readyState>0){
+    if(Math.abs(vid.currentTime-p.clip_time)>1.2){ vid.currentTime = p.clip_time; }
+    if(vid.paused){ vid.play().catch(()=>{}); }
   }
   renderMap();
 }

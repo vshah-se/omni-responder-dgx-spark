@@ -192,6 +192,11 @@ def emit_incident(record, t, streams, calls):
         "wind": {"from_deg": WIND["deg"], "speed_mps": WIND["mps"]},
         "inference_mode": ("live_vlm" if MODE["live"] else "heuristic_fallback")
                           if MODE["probe"] else "unverified",
+        # The player seeks to clip_time and starts playing. The fixture carries this
+        # field so fixture replay animates, but live runs emitted none, leaving the
+        # video parked on a still frame for the whole analysis. t is already the
+        # elapsed position in the clip, which is what this perception refers to.
+        "clip_time": round(float(t), 2),
     }
     if coords:
         perception["location"] = {"name": p.get("location"), **coords}
@@ -354,6 +359,7 @@ def main():
                     "hazard_description": frame["scene_description"],
                     "severity": SEVERITY.get(frame["severity"], 0),
                     "confidence": 0.95,
+                    "clip_time": round(float(t), 2),
                 }, t)
     finally:
         stop.set()
