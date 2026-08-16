@@ -40,32 +40,46 @@ class StreamFrameEvent:
 class VSSPerceptionPipeline:
     """Unbiased Vision Pipeline: Pure Pixel Differencing -> Cosmos Reasoner VLM Reasoning."""
 
-    # Tunable Hyperparameters for Hierarchical Motion Scanner
-    COARSE_SEARCH_MAX_SAMPLES = 20
-    COARSE_SEARCH_MIN_INTERVAL_SEC = 4.0
-    FINE_SEARCH_RESOLUTION_SEC = 1.0
+    # Tunable Hyperparameters for the persistent-deviation incident scanner
+    SCAN_SAMPLE_FPS = 1.0           # thumbnails decoded per second of feed
+    SCAN_PIXEL_THRESHOLD = 18       # grey levels of deviation that count as changed
+    SCAN_WINDOW_SECONDS = 8.0       # how long a change must hold to count as an incident
+    SCAN_PERSISTENCE_RATIO = 0.75   # fraction of the window a pixel must stay deviant
+    MAX_VLM_PROBES = 3              # candidate moments we will spend a VLM call on
 
-
+    # The severity rubric deliberately contains NO reusable incident labels. An earlier
+    # version listed "Active collision impact" as the CRITICAL example and the model
+    # copied that phrase into crisis_type on empty roads, reporting CRITICAL while its
+    # own summary said the traffic was normal. Describe first, judge second.
     STAGE2_DEEP_PROMPT = """You are an objective Edge Surveillance Vision Reasoner on NVIDIA DGX Spark.
-Analyze this high-definition sequence of frames captured directly from an edge roadway surveillance camera.
+Analyze this sequence of frames from a roadway surveillance camera.
 
-Instructions:
-1. Physical Setting: Describe the physical environment and location observed in the video background (e.g. Rural Highway, Multi-Lane Interstate, Urban Commercial Intersection, Mountain Road).
-2. Vehicle Identification: Identify all vehicles visibly present by their true physical body type, size, and color (e.g. sedan, hatchback, SUV, pickup, commercial tractor-trailer, bus, motorcycle).
-3. Incident & Severity Assessment:
-   - "LOW": Normal moving traffic flow with no accidents, collisions, or hazards.
-   - "MEDIUM": Minor roadside incident, vehicle stopped on shoulder with hazard lights, towing operation, or weather caution.
-   - "HIGH" or "CRITICAL": Active collision impact, vehicle wreckage or debris blocking lanes, structural fire, heavy smoke, or hazardous fluid spills.
+Report ONLY what is physically visible in these frames. Do not infer an emergency that you cannot see.
 
-Output ONLY a STRICT JSON object with these exact keys:
+Work in this order:
+1. First write raw_summary: 2-3 sentences describing exactly what is visible.
+2. Then count vehicles_involved: vehicles actually damaged, stopped, or part of an incident. If traffic is simply flowing, this is 0.
+3. Then list hazard_indicators: only hazards you can SEE (smoke, fire, fluid, debris, wreckage). Empty array if none.
+4. Then set crisis_type: your own short description of the scene.
+5. Finally set severity, consistent with what you just wrote:
+   - LOW: traffic flowing normally. No accident, no wreckage, no hazard. THIS IS THE CORRECT ANSWER FOR ORDINARY TRAFFIC.
+   - MEDIUM: a vehicle stopped on the shoulder, hazard lights, a tow operation, emergency responders present, or hazardous weather.
+   - HIGH or CRITICAL: you can SEE a collision, wreckage, debris blocking lanes, fire, smoke, or a spill.
+
+Consistency rules (a violation means your answer is wrong):
+- If vehicles_involved is 0 AND hazard_indicators is empty, severity MUST be LOW.
+- If your raw_summary says there is no accident or no hazard, severity MUST be LOW.
+- Never use severity HIGH or CRITICAL for normally flowing traffic.
+
+Output ONLY a STRICT JSON object with these exact keys, in this order:
 {
-  "location": "string (physical setting observed in video pixels)",
+  "raw_summary": "2-3 sentences of exactly what is visible",
+  "location": "physical setting observed in the video pixels",
   "camera_id": "string",
-  "crisis_type": "string (objective physical classification of the scene)",
+  "vehicles_involved": integer,
+  "hazard_indicators": ["only hazards visible in frame, empty array if none"],
+  "crisis_type": "short objective description of the scene",
   "severity": "CRITICAL" | "HIGH" | "MEDIUM" | "LOW",
-  "vehicles_involved": integer (number of vehicles involved in the incident),
-  "hazard_indicators": ["list of observed physical hazards such as smoke, fire, fluid leak, debris, or empty array if none"],
-  "raw_summary": "2-3 sentence visual summary describing exactly what is seen in the frames without speculation",
   "confidence": float (0.0 to 1.0)
 }"""
 
@@ -145,91 +159,137 @@ Output ONLY a STRICT JSON object with these exact keys:
             pass
         return None
 
-    def _compute_anomaly_score(self, bytes_curr: bytes, bytes_prev: bytes) -> float:
+    def extract_grayscale_series(self, video_path: str, sample_fps: Optional[float] = None) -> List[Tuple[float, bytes]]:
+        """Decodes the entire feed once into 64x64 grayscale thumbnails.
+
+        A single ffmpeg pass replaces one seek per sample: a 6-minute feed yields
+        360 samples in ~2s, where the previous seek-per-sample approach managed 24.
         """
-        Computes a localized anomaly score.
-        Ignores massive full-frame changes (like scene cuts or fades) by capping the max allowed changed pixels.
+        fps = sample_fps or self.SCAN_SAMPLE_FPS
+        cmd = [
+            "ffmpeg", "-v", "error", "-i", video_path,
+            "-vf", f"fps={fps},scale=64:64,format=gray",
+            "-f", "rawvideo", "-"
+        ]
+        try:
+            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=120)
+            raw = proc.stdout
+        except Exception:
+            return []
+        frame_bytes = 64 * 64
+        return [(i / fps, raw[i * frame_bytes:(i + 1) * frame_bytes]) for i in range(len(raw) // frame_bytes)]
+
+    def _exposure_normalized(self, frames: List[Tuple[float, bytes]]) -> List[Tuple[float, List[int]]]:
+        """Subtracts each frame's mean brightness.
+
+        Outdoor cameras drift in exposure over minutes. Without this correction the
+        drift registers as every pixel changing at once and buries genuine local events:
+        on a 6-minute night feed it ranked an empty road above an active incident scene.
         """
-        total_pixels = len(bytes_curr)
-        # Count pixels that changed significantly (lowered to 12 to catch low-contrast vehicles on gray roads)
-        changed_pixels = sum(1 for b1, b2 in zip(bytes_curr, bytes_prev) if abs(b1 - b2) > 12)
-        
-        # If >60% of the image changed, it's a camera cut/fade or full pan. Ignore it.
-        if changed_pixels > (total_pixels * 0.60):
-            return 0.0
-            
-        return (changed_pixels / total_pixels) * 100.0
+        pixels = 64 * 64
+        normalized = []
+        for t, frame in frames:
+            mean = sum(frame) / pixels
+            normalized.append((t, [frame[p] - mean for p in range(pixels)]))
+        return normalized
+
+    def _median_background(self, normalized: List[Tuple[float, List[int]]]) -> List[float]:
+        """Per-pixel median across the feed: the roadway as it normally looks."""
+        pixels = 64 * 64
+        midpoint = len(normalized) // 2
+        return [sorted(f[1][p] for f in normalized)[midpoint] for p in range(pixels)]
+
+    def rank_incident_candidates(self, video_path: str) -> List[Tuple[float, float]]:
+        """Ranks moments by how much of the scene has changed AND STAYED changed.
+
+        Raw pixel change is the wrong signal on a traffic camera: it measures traffic
+        volume, so busy free-flowing lanes always outrank a stationary crash. An
+        incident instead leaves something that arrives and remains - a stopped vehicle,
+        wreckage, responders, a queue. This scores sustained deviation from the
+        background instead, and returns candidates spread across the feed, best first.
+        """
+        frames = self.extract_grayscale_series(video_path)
+        if len(frames) < 4:
+            return []
+
+        pixels = 64 * 64
+        normalized = self._exposure_normalized(frames)
+        background = self._median_background(normalized)
+        masks = [
+            (t, [1 if abs(f[p] - background[p]) > self.SCAN_PIXEL_THRESHOLD else 0 for p in range(pixels)])
+            for t, f in normalized
+        ]
+
+        window = max(2, int(self.SCAN_WINDOW_SECONDS * self.SCAN_SAMPLE_FPS))
+        required = self.SCAN_PERSISTENCE_RATIO * window
+        scored: List[Tuple[float, float]] = []
+        for i in range(len(masks) - window + 1):
+            chunk = masks[i:i + window]
+            persistent = sum(1 for p in range(pixels) if sum(c[1][p] for c in chunk) >= required)
+            scored.append((chunk[len(chunk) // 2][0], persistent / pixels * 100.0))
+
+        # Spread candidates out so all probes do not land inside one event
+        duration = frames[-1][0] or 1.0
+        separation = max(self.SCAN_WINDOW_SECONDS, duration / 8.0)
+        picked: List[Tuple[float, float]] = []
+        for t, score in sorted(scored, key=lambda x: -x[1]):
+            if all(abs(t - pt) >= separation for pt, _ in picked):
+                picked.append((t, score))
+            if len(picked) >= self.MAX_VLM_PROBES:
+                break
+        return picked
+
+    # A scene where this share of pixels has persistently changed is worth reporting
+    ANOMALY_REPORT_THRESHOLD_PCT = 3.0
 
     def scan_motion_and_anomaly_points(self, video_path: str) -> Tuple[bool, float, str]:
-        """Hierarchical (Coarse-to-Fine) pixel differencing to locate exact anomaly moment rapidly."""
+        """Locates the most incident-like moment in the feed.
+
+        Kept for the dashboard adapter and stream narration; ranking lives in
+        rank_incident_candidates().
+        """
         import sys
-        duration = self.get_video_duration(video_path)
-        
-        # --- PHASE 1: COARSE SEARCH ---
-        coarse_interval = max(self.COARSE_SEARCH_MIN_INTERVAL_SEC, duration / self.COARSE_SEARCH_MAX_SAMPLES)
-        num_coarse = max(2, int(duration / coarse_interval))
-        coarse_times = [round((i + 0.5) * coarse_interval, 2) for i in range(num_coarse)]
-        
-        coarse_thumbnails: List[Tuple[float, bytes]] = []
-        for i, t in enumerate(coarse_times):
-            sys.stdout.write(f"\r\033[K[Motion Scanner] Coarse Search: {i+1}/{num_coarse} frames (T={t:.1f}s)...")
-            sys.stdout.flush()
-            raw = self.extract_raw_grayscale_thumbnail(video_path, t)
-            if raw:
-                coarse_thumbnails.append((t, raw))
-                
-        if len(coarse_thumbnails) < 2:
-            sys.stdout.write("\r\033[K")
-            sys.stdout.flush()
-            return False, duration * 0.5, "Standard traffic flow"
+        sys.stderr.write("[Incident Scanner] Decoding feed and scoring persistent change...\n")
+        candidates = self.rank_incident_candidates(video_path)
+        if not candidates:
+            return False, self.get_video_duration(video_path) * 0.5, "Standard traffic flow"
 
-        coarse_deltas = []
-        for i in range(1, len(coarse_thumbnails)):
-            t_curr, bytes_curr = coarse_thumbnails[i]
-            t_prev, bytes_prev = coarse_thumbnails[i - 1]
-            diff = self._compute_anomaly_score(bytes_curr, bytes_prev)
-            coarse_deltas.append((t_prev, t_curr, diff))
+        best_t, best_score = candidates[0]
+        if best_score >= self.ANOMALY_REPORT_THRESHOLD_PCT:
+            return True, best_t, f"Sustained scene change detected ({best_score:.1f}% of view held changed)"
+        return False, best_t, "Continuous traffic flow"
 
-        # Find the window with the highest variance
-        best_prev, best_curr, best_coarse_diff = max(coarse_deltas, key=lambda x: x[2])
-        
-        # --- PHASE 2: FINE SEARCH ---
-        fine_window_duration = best_curr - best_prev
-        num_fine = max(3, int(fine_window_duration / self.FINE_SEARCH_RESOLUTION_SEC))
-        fine_times = [round(best_prev + (i + 0.5) * (fine_window_duration / num_fine), 2) for i in range(num_fine)]
-        
-        fine_thumbnails = []
-        for i, t in enumerate(fine_times):
-            sys.stdout.write(f"\r\033[K[Motion Scanner] Fine Search (Window {best_prev:.1f}s-{best_curr:.1f}s): {i+1}/{num_fine} frames (T={t:.1f}s)...")
-            sys.stdout.flush()
-            raw = self.extract_raw_grayscale_thumbnail(video_path, t)
-            if raw:
-                fine_thumbnails.append((t, raw))
-                
-        sys.stdout.write("\r\033[K")
-        sys.stdout.flush()
-        
-        if len(fine_thumbnails) < 2:
-            return False, best_curr, "Continuous traffic flow"
-            
-        fine_deltas = []
-        for i in range(1, len(fine_thumbnails)):
-            t_curr, bytes_curr = fine_thumbnails[i]
-            _, bytes_prev = fine_thumbnails[i - 1]
-            diff = self._compute_anomaly_score(bytes_curr, bytes_prev)
-            fine_deltas.append((t_curr, diff))
+    def analyze_incident(self, video_path: str, location_hint: Optional[str] = None) -> VisualContextSummary:
+        """Probes candidate moments until one shows a real incident.
 
-        max_t, max_diff = max(fine_deltas, key=lambda x: x[1])
-        
-        # Calculate baseline from coarse search (excluding the anomalous window) to prevent skewing
-        baseline_diffs = [d[2] for d in coarse_deltas if d[2] != best_coarse_diff]
-        avg_diff = sum(baseline_diffs) / len(baseline_diffs) if baseline_diffs else best_coarse_diff
+        A single probe cannot be trusted to land on the event: on a 6-minute feed the
+        highest-scoring moment may be heavy traffic while the incident sits elsewhere.
+        Quiet footage therefore costs one VLM call, and only ambiguous footage escalates.
+        """
+        import sys
+        candidates = self.rank_incident_candidates(video_path)
+        if not candidates:
+            candidates = [(self.get_video_duration(video_path) * 0.5, 0.0)]
 
-        # Sensitive to tiny anomalies (down to 0.05% of pixels, e.g. a small car crash in an aerial view)
-        if max_diff > (avg_diff * 1.2) and max_diff > 0.05:
-            return True, max_t, f"Localized spatial anomaly spike detected (Score={max_diff:.2f})"
+        first_summary: Optional[VisualContextSummary] = None
+        for index, (timestamp, score) in enumerate(candidates[:self.MAX_VLM_PROBES], start=1):
+            burst_frames = self.extract_targeted_burst(video_path, timestamp)
+            if not burst_frames:
+                continue
+            sys.stderr.write(
+                f"[Incident Scanner] Probe {index}/{min(len(candidates), self.MAX_VLM_PROBES)} "
+                f"at T={timestamp:.1f}s (persistence {score:.1f}%)\n"
+            )
+            summary = self.deep_sequence_diagnosis(burst_frames, location_hint)
+            summary.camera_id = self.camera_id_for(video_path)
+            if summary.severity != "LOW":
+                return summary
+            if first_summary is None:
+                first_summary = summary
 
-        return False, max_t, "Continuous traffic flow"
+        if first_summary is None:
+            raise RuntimeError(f"Failed to extract frames from video stream: {video_path}")
+        return first_summary
 
     def extract_targeted_burst(self, video_path: str, center_t: float) -> List[Tuple[float, str]]:
         """Extracts high-density burst of frames around the exact anomaly moment."""
@@ -337,9 +397,7 @@ Output ONLY a STRICT JSON object with these exact keys:
             )
 
         target_t = anomaly_t if has_anomaly else duration * 0.5
-        burst_frames = self.extract_targeted_burst(video_path, target_t)
-        
-        summary = self.deep_sequence_diagnosis(burst_frames, location_hint)
+        summary = self.analyze_incident(video_path, location_hint)
         summary.camera_id = camera_id
         summary.timestamp = datetime.datetime.now().strftime("%H:%M:%S")
 
@@ -362,13 +420,7 @@ Output ONLY a STRICT JSON object with these exact keys:
 
     def process_video_file(self, video_path: str, location_hint: Optional[str] = None) -> VisualContextSummary:
         """Direct end-to-end processing purely on video frames."""
-        _, anomaly_t, _ = self.scan_motion_and_anomaly_points(video_path)
-        burst_frames = self.extract_targeted_burst(video_path, anomaly_t)
-        if burst_frames:
-            summary = self.deep_sequence_diagnosis(burst_frames, location_hint)
-            summary.camera_id = self.camera_id_for(video_path)
-            return summary
-        raise RuntimeError(f"Failed to extract frames from video stream: {video_path}")
+        return self.analyze_incident(video_path, location_hint=location_hint)
 
     def parse_vlm_json_output(self, raw_response: str, location_hint: Optional[str] = None) -> VisualContextSummary:
         """Parses and preserves exact visual reasoning from Cosmos Reasoner with zero overwrites."""
@@ -411,6 +463,11 @@ Output ONLY a STRICT JSON object with these exact keys:
                 vehicles_count = int(raw_vehicles)
             else:
                 vehicles_count = 1 if severity_str in ["MEDIUM", "HIGH", "CRITICAL"] else 0
+
+            # Safety net for a model echoing a severity it did not observe: an emergency
+            # with no vehicles involved and no visible hazard is self-contradictory.
+            if severity_str in ["HIGH", "CRITICAL"] and vehicles_count == 0 and not vlm_hazards:
+                severity_str = "LOW"
 
             return VisualContextSummary(
                 location=vlm_location,

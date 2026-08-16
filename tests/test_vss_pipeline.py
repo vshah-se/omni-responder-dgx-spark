@@ -60,3 +60,58 @@ def test_process_video_file_overwrites_generic_vlm_camera_id(monkeypatch):
     )
     summary = p.process_video_file("data/video_clips/aic21_80.mp4")
     assert summary.camera_id == "CAM-EDGE-AIC21_80"
+
+
+def test_parser_downgrades_contradictory_severity():
+    """A model echoing 'CRITICAL' with no vehicles and no hazards is contradicting itself."""
+    p = VSSPerceptionPipeline()
+    raw = json.dumps({
+        "raw_summary": "Traffic flows normally with no signs of any accident.",
+        "location": "Multi-Lane Interstate", "camera_id": "x",
+        "vehicles_involved": 0, "hazard_indicators": [],
+        "crisis_type": "Active collision impact", "severity": "CRITICAL", "confidence": 0.98,
+    })
+    assert p.parse_vlm_json_output(raw).severity == "LOW"
+
+
+def test_parser_keeps_severity_when_evidence_present():
+    p = VSSPerceptionPipeline()
+    raw = json.dumps({
+        "raw_summary": "Two cars collided; smoke is rising from the wreck.",
+        "location": "Interstate", "camera_id": "x",
+        "vehicles_involved": 2, "hazard_indicators": ["smoke", "wreckage"],
+        "crisis_type": "Collision with smoke", "severity": "CRITICAL", "confidence": 0.9,
+    })
+    assert p.parse_vlm_json_output(raw).severity == "CRITICAL"
+
+
+def test_prompt_contains_no_copyable_incident_label():
+    """The old rubric handed the model the phrase it then pasted into crisis_type."""
+    assert "Active collision impact" not in VSSPerceptionPipeline.STAGE2_DEEP_PROMPT
+
+
+def test_escalation_stops_at_first_real_incident(monkeypatch):
+    p = VSSPerceptionPipeline()
+    monkeypatch.setattr(p, "rank_incident_candidates", lambda v: [(10.0, 9.0), (50.0, 4.0), (90.0, 2.0)])
+    monkeypatch.setattr(p, "extract_targeted_burst", lambda v, t: [(t, "b64")])
+    seen = []
+
+    def fake_vlm(frames, hint=None):
+        t = frames[0][0]
+        seen.append(t)
+        sev = "CRITICAL" if t == 50.0 else "LOW"
+        return VisualContextSummary(severity=sev, crisis_type=f"probe@{t}")
+
+    monkeypatch.setattr(p, "deep_sequence_diagnosis", fake_vlm)
+    summary = p.analyze_incident("data/video_clips/aic21_95.mp4")
+    assert summary.severity == "CRITICAL"
+    assert seen == [10.0, 50.0], "must stop probing once an incident is found"
+
+
+def test_escalation_reports_all_clear_when_every_probe_is_quiet(monkeypatch):
+    p = VSSPerceptionPipeline()
+    monkeypatch.setattr(p, "rank_incident_candidates", lambda v: [(10.0, 1.0), (50.0, 0.5)])
+    monkeypatch.setattr(p, "extract_targeted_burst", lambda v, t: [(t, "b64")])
+    monkeypatch.setattr(p, "deep_sequence_diagnosis",
+                        lambda frames, hint=None: VisualContextSummary(severity="LOW"))
+    assert p.analyze_incident("data/video_clips/aic21_80.mp4").severity == "LOW"
