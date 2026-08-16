@@ -5,6 +5,7 @@ from src.perception.vss_pipeline import VSSPerceptionPipeline, VisualContextSumm
 from src.agents.hazmat_agent import HazmatAgent
 from src.agents.traffic_agent import TrafficAgent
 from src.agents.comms_agent import CommsAgent
+from src.notifiers import TelegramNotifier
 from src.config.settings import settings
 
 class IncidentOrchestrator:
@@ -16,6 +17,7 @@ class IncidentOrchestrator:
         self.hazmat_agent = HazmatAgent()
         self.traffic_agent = TrafficAgent()
         self.comms_agent = CommsAgent()
+        self.telegram = TelegramNotifier()
 
     def process_incident(self, video_input: Union[str, VisualContextSummary], location_hint: Optional[str] = None) -> Dict[str, Any]:
         """Main end-to-end incident dispatch loop."""
@@ -48,7 +50,7 @@ class IncidentOrchestrator:
         )
 
         # 5. Assemble Consolidated Incident Record
-        return {
+        record = {
             "incident_id": dispatch_report["cad_id"],
             "timestamp": dispatch_report["timestamp"],
             "platform": {
@@ -62,6 +64,10 @@ class IncidentOrchestrator:
             "traffic": traffic_result,
             "dispatch_report": dispatch_report
         }
+
+        # 6. Telegram Notifier (simulated call to the needed resource)
+        record["telegram_dispatch"] = self.telegram.notify_dispatch(record)
+        return record
 
     def stream_incident(
         self,
