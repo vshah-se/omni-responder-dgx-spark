@@ -153,3 +153,34 @@ def test_absence_of_responders_stays_low():
         "crisis_type": "Normal traffic flow", "severity": "LOW", "confidence": 0.95,
     })
     assert p.parse_vlm_json_output(raw).severity == "LOW"
+
+
+def test_vlm_timeout_does_not_crash_the_run(monkeypatch):
+    """A socket timeout is not a URLError; catching only URLError crashed the demo."""
+    p = VSSPerceptionPipeline()
+    monkeypatch.setattr(p, "_get_active_model_name", lambda: "test-model")
+
+    def boom(*a, **kw):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr("urllib.request.urlopen", boom)
+    summary = p.deep_sequence_diagnosis([(1.0, "b64")])
+    assert summary.crisis_type == "VLM_CONNECTION_OFFLINE"
+    assert summary.confidence == 0.0
+
+
+def test_failed_probe_is_not_reported_as_all_clear(monkeypatch):
+    """A probe the VLM never answered must not masquerade as a quiet road."""
+    p = VSSPerceptionPipeline()
+    monkeypatch.setattr(p, "rank_incident_candidates", lambda v: [(10.0, 5.0), (60.0, 4.0)])
+    monkeypatch.setattr(p, "extract_targeted_burst", lambda v, t: [(t, "b64")])
+
+    def vlm(frames, hint=None):
+        if frames[0][0] == 10.0:
+            return VisualContextSummary(crisis_type="VLM_CONNECTION_OFFLINE", severity="LOW", confidence=0.0)
+        return VisualContextSummary(crisis_type="Collision", severity="CRITICAL",
+                                    vehicles_involved=2, hazard_indicators=["smoke"])
+
+    monkeypatch.setattr(p, "deep_sequence_diagnosis", vlm)
+    summary = p.analyze_incident("data/video_clips/x.mp4")
+    assert summary.severity == "CRITICAL", "must keep probing past a failed VLM call"

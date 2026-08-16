@@ -46,6 +46,7 @@ class VSSPerceptionPipeline:
     SCAN_WINDOW_SECONDS = 8.0       # how long a change must hold to count as an incident
     SCAN_PERSISTENCE_RATIO = 0.75   # fraction of the window a pixel must stay deviant
     MAX_VLM_PROBES = 3              # candidate moments we will spend a VLM call on
+    VLM_TIMEOUT_SECONDS = 120       # a loaded NIM can exceed 35s on a multi-frame burst
 
     # The severity rubric deliberately contains NO reusable incident labels. An earlier
     # version listed "Active collision impact" as the CRITICAL example and the model
@@ -292,6 +293,7 @@ Output ONLY a STRICT JSON object with these exact keys, in this order:
             candidates = [(self.get_video_duration(video_path) * 0.5, 0.0)]
 
         first_summary: Optional[VisualContextSummary] = None
+        failed_summary: Optional[VisualContextSummary] = None
         for index, (timestamp, score) in enumerate(candidates[:self.MAX_VLM_PROBES], start=1):
             burst_frames = self.extract_targeted_burst(video_path, timestamp)
             if not burst_frames:
@@ -302,14 +304,21 @@ Output ONLY a STRICT JSON object with these exact keys, in this order:
             )
             summary = self.deep_sequence_diagnosis(burst_frames, location_hint)
             summary.camera_id = self.camera_id_for(video_path)
+
+            # A probe the VLM never answered is not evidence of a quiet road
+            if summary.crisis_type == "VLM_CONNECTION_OFFLINE":
+                failed_summary = summary
+                continue
             if summary.severity != "LOW":
                 return summary
             if first_summary is None:
                 first_summary = summary
 
-        if first_summary is None:
-            raise RuntimeError(f"Failed to extract frames from video stream: {video_path}")
-        return first_summary
+        if first_summary is not None:
+            return first_summary
+        if failed_summary is not None:
+            return failed_summary
+        raise RuntimeError(f"Failed to extract frames from video stream: {video_path}")
 
     def extract_targeted_burst(self, video_path: str, center_t: float) -> List[Tuple[float, str]]:
         """Extracts high-density burst of frames around the exact anomaly moment."""
@@ -359,20 +368,23 @@ Output ONLY a STRICT JSON object with these exact keys, in this order:
         )
         
         try:
-            with urllib.request.urlopen(req, timeout=35) as resp:
+            with urllib.request.urlopen(req, timeout=self.VLM_TIMEOUT_SECONDS) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
                 raw_text = data["choices"][0]["message"]["content"]
                 return self.parse_vlm_json_output(raw_text, location_hint)
-        except (urllib.error.URLError, ConnectionError) as e:
-            print(f"\n\033[1;31m[CRITICAL] Connection to Cosmos VLM failed: {e}.\033[0m")
-            print(f"\033[1;33mPlease ensure the NIM container has fully finished booting up and that your prompt size doesn't exceed NIM_MAX_MODEL_LEN.\033[0m\n")
+        except Exception as e:
+            # A socket timeout raises TimeoutError, which is neither URLError nor
+            # ConnectionError, so a slow NIM used to crash the whole run mid-demo.
+            import sys
+            sys.stderr.write(f"\n\033[1;31m[WARN] Cosmos VLM probe failed ({type(e).__name__}): {e}\033[0m\n")
+            sys.stderr.write("\033[1;33mCheck the NIM container is running and the prompt fits NIM_MAX_MODEL_LEN.\033[0m\n")
             return VisualContextSummary(
                 location=location_hint or "Unknown",
                 camera_id="CAM-DGX-SPARK-01",
                 crisis_type="VLM_CONNECTION_OFFLINE",
                 severity="LOW",
                 vehicles_involved=0,
-                raw_summary=f"ERROR: The Vision-Language Model container is currently unreachable. Reason: {e}",
+                raw_summary=f"ERROR: The Vision-Language Model probe failed ({type(e).__name__}): {e}",
                 confidence=0.0
             )
 
