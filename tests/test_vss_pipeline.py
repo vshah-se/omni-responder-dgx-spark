@@ -1,4 +1,5 @@
 import os
+import re
 import json
 from src.perception.vss_pipeline import VSSPerceptionPipeline, VisualContextSummary
 
@@ -42,11 +43,28 @@ if __name__ == "__main__":
     print("✅ All perception pipeline pixel tests passed successfully!")
 
 
-def test_camera_id_derived_from_filename():
-    """The VLM invents a generic camera name; both entry points must overwrite it."""
+def test_camera_id_derived_from_content(tmp_path):
+    """Identity comes from what the camera records, not what the file is called.
+
+    Rewritten for 1d52f4c, which moved camera_id_for() from the filename to a SHA-1
+    of the first 8KB of content. The test still asserted the filename form and had
+    been failing since. What is worth locking in is the property that motivated the
+    change: renaming a file must not rename the camera.
+    """
     p = VSSPerceptionPipeline()
-    assert p.camera_id_for("data/video_clips/aic21_80.mp4") == "CAM-EDGE-AIC21_80"
-    assert p.camera_id_for("/abs/path/scenario_1.mp4") == "CAM-EDGE-SCENARIO_1"
+    real = "data/video_clips/aic21_80.mp4"
+
+    cam = p.camera_id_for(real)
+    assert re.fullmatch(r"CAM-EDGE-[0-9A-F]{8}", cam), cam
+    assert p.camera_id_for(real) == cam, "identity must be stable across calls"
+
+    # Same bytes under a different name must yield the same camera.
+    renamed = tmp_path / "totally_different_name.mp4"
+    renamed.write_bytes(open(real, "rb").read(8192))
+    assert p.camera_id_for(str(renamed)) == cam
+
+    # An unreadable path degrades to a marker rather than raising mid-pipeline.
+    assert p.camera_id_for("/abs/path/does_not_exist.mp4") == "CAM-EDGE-UNKNOWN"
 
 
 def test_process_video_file_overwrites_generic_vlm_camera_id(monkeypatch):
@@ -59,7 +77,11 @@ def test_process_video_file_overwrites_generic_vlm_camera_id(monkeypatch):
         lambda frames, hint=None: VisualContextSummary(camera_id="edge_surveillance_camera")
     )
     summary = p.process_video_file("data/video_clips/aic21_80.mp4")
-    assert summary.camera_id == "CAM-EDGE-AIC21_80"
+    # Asserted against the canonical derivation rather than a literal, so this test
+    # survives the next change to how identity is computed. The point of the test is
+    # that the VLM's invented name is overwritten, not what it is overwritten with.
+    assert summary.camera_id != "edge_surveillance_camera"
+    assert summary.camera_id == p.camera_id_for("data/video_clips/aic21_80.mp4")
 
 
 def test_parser_downgrades_contradictory_severity():

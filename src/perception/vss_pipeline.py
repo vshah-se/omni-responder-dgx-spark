@@ -90,6 +90,12 @@ Output ONLY a STRICT JSON object with these exact keys, in this order:
     def __init__(self, endpoint_url: Optional[str] = None, model_name: Optional[str] = None):
         self.endpoint_url = endpoint_url or os.getenv("COSMOS_VLM_URL", "http://localhost:30082/v1")
         self.model_name = model_name or os.getenv("COSMOS_VLM_MODEL")
+        # Ranking a feed means decoding it end to end, and one run asks for the same
+        # ranking twice: stream_video_feed() scans to announce the anomaly, then
+        # analyze_incident() scans again to choose probe points. Same file, same
+        # answer, paid for twice. Keyed on identity+size+mtime rather than path alone
+        # so a replaced file under a reused name is not served a stale ranking.
+        self._candidate_cache: Dict[Tuple[str, int, int], List[Tuple[float, float]]] = {}
 
     def _get_active_model_name(self) -> str:
         """Queries the NIM container for its registered model name."""
@@ -193,9 +199,24 @@ Output ONLY a STRICT JSON object with these exact keys, in this order:
         incident instead leaves something that arrives and remains - a stopped vehicle,
         wreckage, responders, a queue. This scores sustained deviation from the
         background instead, and returns candidates spread across the feed, best first.
+
+        Memoised per file: the decode pass dominates the cost and both callers in a
+        single run want the identical answer. A cache miss behaves exactly as before.
         """
+        cache_key = None
+        try:
+            st = os.stat(video_path)
+            cache_key = (os.path.realpath(video_path), st.st_size, int(st.st_mtime))
+            if cache_key in self._candidate_cache:
+                sys.stderr.write("[Incident Scanner] Reusing ranking for this feed (cached).\n")
+                return list(self._candidate_cache[cache_key])
+        except OSError:
+            pass                                  # unreadable path: fall through uncached
+
         frames = self.extract_grayscale_series(video_path)
         if len(frames) < 4:
+            if cache_key is not None:
+                self._candidate_cache[cache_key] = []
             return []
 
         pixels = 64 * 64
@@ -223,6 +244,8 @@ Output ONLY a STRICT JSON object with these exact keys, in this order:
                 picked.append((t, score))
             if len(picked) >= self.MAX_VLM_PROBES:
                 break
+        if cache_key is not None:
+            self._candidate_cache[cache_key] = list(picked)
         return picked
 
     # A scene where this share of pixels has persistently changed is worth reporting
@@ -245,6 +268,27 @@ Output ONLY a STRICT JSON object with these exact keys, in this order:
     )
     # Words that flip a sentence to describing an ABSENCE
     NEGATION_MARKERS = ("no ", "not ", "without ", "absent", "none ", "n't ")
+
+    # Distinct KINDS of responder, counted separately from RESPONDER_PHRASES above.
+    # One kind on a road may be a vehicle passing through; two kinds standing on the
+    # same road is a scene being worked by more than one service. Tow trucks stay out
+    # for the same reason they are absent from RESPONDER_PHRASES.
+    RESPONDER_FAMILIES = {
+        "police": ("police", "law enforcement", "patrol car", "squad car", "state trooper"),
+        "fire": ("fire truck", "fire engine", "fire apparatus", "firefighter", "ladder truck"),
+        "medical": ("ambulance", "paramedic", "medic unit", "ems "),
+    }
+    # The road itself is stopped, queued or narrowed. Every phrase here describes
+    # something the model can see directly, which is the point: it lets severity rise
+    # on observation rather than on inferring a wreck nobody photographed.
+    TRAFFIC_ARRESTED_PHRASES = (
+        "halted", "standstill", "stopped traffic", "traffic is stopped",
+        "traffic has stopped", "backed up", "queuing", "queued", "gridlock",
+        "road closed", "lane closed", "lanes closed", "closed to traffic",
+    )
+    LANE_OBSTRUCTION_PHRASES = (
+        "obstructing", "obstructed", "blocking", "blocked", "impassable",
+    )
 
     def scan_motion_and_anomaly_points(self, video_path: str) -> Tuple[bool, float, str]:
         """Locates the most incident-like moment in the feed.
@@ -387,6 +431,32 @@ Output ONLY a STRICT JSON object with these exact keys, in this order:
         for sentence in re.split(r"[.;]", scene_text):
             if any(phrase in sentence for phrase in self.RESPONDER_PHRASES) and \
                     not any(marker in sentence for marker in self.NEGATION_MARKERS):
+                return True
+        return False
+
+    def _responder_families_present(self, scene_text: str) -> int:
+        """How many DISTINCT kinds of responder are described as being on scene.
+
+        Sentence-scoped and negation-aware for the same reason as
+        _responders_present(): "no police or fire crews are visible" describes an
+        empty road, not two services attending one.
+        """
+        families = set()
+        for sentence in re.split(r"[.;]", scene_text):
+            if any(marker in sentence for marker in self.NEGATION_MARKERS):
+                continue
+            for family, phrases in self.RESPONDER_FAMILIES.items():
+                if any(phrase in sentence for phrase in phrases):
+                    families.add(family)
+        return len(families)
+
+    def _scene_arrested(self, scene_text: str) -> bool:
+        """True where the road is described as stopped, queued, or a lane obstructed."""
+        for sentence in re.split(r"[.;]", scene_text):
+            if any(marker in sentence for marker in self.NEGATION_MARKERS):
+                continue
+            if any(p in sentence for p in self.TRAFFIC_ARRESTED_PHRASES) or \
+                    any(p in sentence for p in self.LANE_OBSTRUCTION_PHRASES):
                 return True
         return False
 
@@ -533,6 +603,30 @@ Output ONLY a STRICT JSON object with these exact keys, in this order:
             # the floor is enforced rather than requested.
             if severity_str == "LOW" and shows_responders:
                 severity_str = "MEDIUM"
+
+            # Escalate on the scale of the response, not on seeing the wreck.
+            #
+            # The rubric caps severity at MEDIUM unless the model can name visible
+            # wreckage, fire, debris or a spill. That is right for hallucination
+            # control and wrong for attended scenes, because the better attended an
+            # incident is the more likely the wreck is screened by the responders, has
+            # already been cleared, or is simply invisible at night. In that case the
+            # reported severity moves INVERSELY to the real one.
+            #
+            # On tanker.mp4 the model described a fire truck, police cars, one lane
+            # obstructed and traffic halted, then correctly added that it could see no
+            # collision — and the pipeline settled on MEDIUM, which the dashboard
+            # printed as "minor" over a road full of emergency vehicles.
+            #
+            # Two DISTINCT responder families plus a stopped or narrowed road is an
+            # incident being worked. Every term is something the model said it saw, so
+            # nothing here is inferred. The aic21_01 case behind ee2e026 — a tow truck
+            # hauling a car along a flowing motorway — fails both halves: tow trucks
+            # are not a family, and flowing traffic is not arrested.
+            if (severity_str in ["LOW", "MEDIUM"]
+                    and self._responder_families_present(scene_text) >= 2
+                    and self._scene_arrested(scene_text)):
+                severity_str = "HIGH"
 
             return VisualContextSummary(
                 location=vlm_location,

@@ -81,6 +81,11 @@ button.tog:hover{color:var(--ink-hi); border-color:var(--line-hi)}
 .status.live.on{color:var(--critical); border-color:color-mix(in srgb,var(--critical) 55%,transparent)}
 .status.live.on .dot{animation:beat 1s steps(1,end) infinite}
 @keyframes beat{0%,49%{opacity:1} 50%,100%{opacity:.15}}
+/* Terminal run states. Deliberately NOT animated: a still dot is how you tell at a
+   glance that the run has stopped, whichever way it stopped. */
+.status.live.done{color:var(--verified); border-color:color-mix(in srgb,var(--verified) 45%,transparent)}
+.status.live.failed{color:var(--critical); border-color:color-mix(in srgb,var(--critical) 55%,transparent)}
+.status.live.done .dot,.status.live.failed .dot{animation:none; opacity:1}
 
 /* Upload is the one control a visitor is invited to touch, so it gets the only
    filled button in the bar. Everything else here is read-only status. */
@@ -565,14 +570,25 @@ function renderMap(){
 }
 
 /* ---------- ledger ---------- */
-const SEVLABEL=["clear","minor","major","critical"];
+/* Index 1 is the pipeline's MEDIUM. It read "minor", which understated a scene with a
+   fire crew, police units and halted traffic — the overlay contradicted the description
+   printed beside it. */
+const SEVLABEL=["clear","moderate","major","critical"];
 function ledgerRow(ev){
   const p=ev.payload||{}, row=document.createElement("div");
   row.className="entry fresh"; row.dataset.k=ev.kind;
   if(p.status==="error") row.dataset.err="1";
 
   let who=ev.source, ms="", txt="", args="";
-  if(ev.kind==="perception"){
+  if(ev.kind==="lifecycle"){
+    if(p.phase==="error") row.dataset.err="1";
+    who = p.phase==="start" ? "run started"
+        : p.phase==="complete" ? "run complete" : "run failed";
+    txt = p.phase==="start" ? `Analysing ${p.video||"feed"}`
+        : p.error || `${p.frames??0} frames · ${p.incidents??0} incidents`;
+    args = p.inference_mode ? `inference ${p.inference_mode}` : "";
+    ms = p.elapsed_sec!=null ? `${p.elapsed_sec} s` : "";
+  } else if(ev.kind==="perception"){
     txt = p.hazard_description||"";
     ms = p.latency_ms!=null ? `${p.latency_ms} ms` : "";
     if(p.severity!=null) args = `severity ${p.severity} · ${SEVLABEL[p.severity]} · confidence ${(p.confidence??0).toFixed(2)}`;
@@ -697,7 +713,7 @@ function resetAll(){
   $("erg-noterow").hidden=true; $("readout").hidden=true; $("logcount").textContent="0 entries";
   $("map").replaceChildren(); $("boxes").replaceChildren();
   $("maptag").textContent="awaiting fix"; $("cam").textContent="no stream";
-  resetAgents();
+  resetAgents(); clearRunState();
   if(vid.readyState>0){ vid.currentTime=0; }
 }
 
@@ -806,6 +822,9 @@ function handle(ev){
   if(ev.t!=null){ clockT=Math.max(clockT,ev.t); running=true; }
   const p=ev.payload||{};
   if(ev.kind==="telemetry"){ onTelemetry(p); return; }   // telemetry stays out of the ledger
+  // Lifecycle drives the badge AND lands in the ledger, so the run's start and end
+  // are timestamped rows a judge can point at, not just a label that changed.
+  if(ev.kind==="lifecycle"){ onLifecycle(p); ledgerRow(ev); return; }
   driveAgents(ev);
   if(ev.kind==="perception") onPerception(p);
   if(ev.kind==="tool_call")  onTool(p);
@@ -817,13 +836,49 @@ function handle(ev){
    Blinks only while events are actually arriving. A badge that pulses red over a
    dead pipeline is theatre, and a judge who notices it stops trusting the rest. */
 const LIVE = {last:0, on:false};
-function markLive(){ LIVE.last = Date.now(); if(!LIVE.on){ LIVE.on=true;
-  $("live").classList.add("on"); $("liveLbl").textContent="Live"; } }
+function markLive(){ LIVE.last = Date.now(); if(!LIVE.on){ LIVE.on=true; repaintLive(); } }
 setInterval(()=>{
-  if(LIVE.on && Date.now()-LIVE.last > 4000){
-    LIVE.on=false; $("live").classList.remove("on"); $("liveLbl").textContent="Standby";
-  }
+  if(LIVE.on && Date.now()-LIVE.last > 4000){ LIVE.on=false; repaintLive(); }
 }, 700);
+
+/* ---------- run lifecycle ----------
+   The heartbeat above answers "are events arriving right now". It cannot answer
+   "did this run finish, or did it die" — after either, events simply stop and the
+   badge falls back to Standby, which is also what it says before anything has ever
+   run. Three states that matter get conflated into one word.
+
+   The adapter now emits an explicit terminal event, so a finished run reads
+   "Complete", a crashed one reads "Failed", and neither is mistaken for idle.
+   RUNSTATE outranks the heartbeat: once a run has ended, the label stays ended. */
+const RUNSTATE = {phase:null, text:null};
+
+function onLifecycle(p){
+  if(p.phase === "start"){
+    RUNSTATE.phase = "running";
+    RUNSTATE.text  = `Analysing ${p.video || "feed"}`;
+  } else if(p.phase === "complete"){
+    const bits = [];
+    if(p.incidents != null) bits.push(`${p.incidents} incident${p.incidents === 1 ? "" : "s"}`);
+    if(p.inference_mode)    bits.push(p.inference_mode);
+    if(p.elapsed_sec != null) bits.push(`${p.elapsed_sec}s`);
+    RUNSTATE.phase = "complete";
+    RUNSTATE.text  = bits.length ? `Complete — ${bits.join(" · ")}` : "Complete";
+  } else {
+    RUNSTATE.phase = "error";
+    RUNSTATE.text  = `Failed — ${p.error || "adapter stopped"}`;
+  }
+  repaintLive();
+}
+
+function repaintLive(){
+  const el = $("live"), done = RUNSTATE.phase === "complete", failed = RUNSTATE.phase === "error";
+  el.classList.toggle("done", done);
+  el.classList.toggle("failed", failed);
+  el.classList.toggle("on", LIVE.on && !done && !failed);
+  $("liveLbl").textContent = RUNSTATE.text ? RUNSTATE.text : (LIVE.on ? "Live" : "Standby");
+}
+
+function clearRunState(){ RUNSTATE.phase = null; RUNSTATE.text = null; repaintLive(); }
 
 /* ---------- source selection ----------
    Picking a video only arms it. Run is a separate, deliberate press, because
@@ -951,7 +1006,9 @@ $("theme").addEventListener("click", ()=>{
 let ws, retry=0;
 function connect(){
   ws = new WebSocket(`${location.protocol==="https:"?"wss":"ws"}://${location.host}/ws`);
-  ws.onopen = ()=>{ retry=0; $("liveLbl").textContent = LIVE.on ? "Live" : "Standby"; };
+  // Via repaintLive, not a direct write: reconnecting must not erase the result of
+  // a run that already finished.
+  ws.onopen = ()=>{ retry=0; repaintLive(); };
   ws.onclose = ()=>{ LIVE.on=false; $("live").classList.remove("on");
                      $("liveLbl").textContent="No bus";
                      setTimeout(connect, Math.min(4000, 400*++retry)); };

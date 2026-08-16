@@ -346,9 +346,22 @@ def main():
     threading.Thread(target=telemetry_loop,
                      args=(stop, clock, streams, calls), daemon=True).start()
 
+    # The dashboard cannot otherwise tell "still working" from "died": this process
+    # is launched with stdout=DEVNULL, so every print below is discarded. Without a
+    # terminal event on the bus a crashed run and a finished run look identical —
+    # the ledger simply stops growing. These two emits are the difference.
+    emit("lifecycle", "adapter", {
+        "phase": "start",
+        "video": pathlib.Path(video_path).name,
+        "location": location,
+    }, 0.0)
+
+    failure = None
+    frames_seen = 0
     try:
         for frame in orch.stream_incident(video_path, location_hint=location,
                                           speed_multiplier=args.speed):
+            frames_seen += 1
             t = frame.get("elapsed_seconds", time.time() - clock["t0"])
             if frame["event_type"] in TRIGGER:
                 emit_incident(frame["incident_record"], t, streams, calls)
@@ -361,10 +374,25 @@ def main():
                     "confidence": 0.95,
                     "clip_time": round(float(t), 2),
                 }, t)
+    except BaseException as exc:                 # includes KeyboardInterrupt / terminate
+        failure = f"{type(exc).__name__}: {exc}"
+        raise
     finally:
         stop.set()
         mode = ("LIVE VLM" if MODE["live"] else "HEURISTIC FALLBACK") \
             if MODE["probe"] else "UNVERIFIED (no probe point found)"
+        # `mode` is the most useful line this process produces and it has always gone
+        # to DEVNULL. On the bus it becomes a claim a judge can read: this run used
+        # the real model, not the offline heuristic.
+        emit("lifecycle", "adapter", {
+            "phase": "error" if failure else "complete",
+            "video": pathlib.Path(video_path).name,
+            "inference_mode": mode,
+            "frames": frames_seen,
+            "incidents": calls["n"],
+            "elapsed_sec": round(time.time() - clock["t0"], 1),
+            "error": failure,
+        }, time.time() - clock["t0"])
         print(f"[adapter] done — inference mode was {mode}")
 
 
