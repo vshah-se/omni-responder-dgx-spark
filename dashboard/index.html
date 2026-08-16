@@ -47,20 +47,20 @@ body{
 /* ---------- structure ---------- */
 .shell{display:flex; flex-direction:column; height:100vh; gap:1px; background:var(--line)}
 header{
-  display:flex; align-items:center; gap:20px; padding:11px 18px;
-  background:var(--panel-2); flex-shrink:0;
+  display:flex; align-items:center; gap:11px; padding:10px 15px;
+  background:var(--panel-2); flex-shrink:0; flex-wrap:wrap;
 }
 .wordmark{font-weight:700; letter-spacing:.2em; font-size:13px; text-transform:uppercase; color:var(--ink-hi)}
 .wordmark span{color:var(--hazard)}
 .sep{width:1px; height:22px; background:var(--line-hi)}
 
 .clock{font-family:var(--mono); display:flex; align-items:baseline; gap:9px}
-.clock b{font-size:25px; font-weight:600; letter-spacing:.03em; color:var(--ink-hi); font-variant-numeric:tabular-nums}
+.clock b{font-size:22px; font-weight:600; letter-spacing:.03em; color:var(--ink-hi); font-variant-numeric:tabular-nums}
 .clock small{font-size:10px; letter-spacing:.13em; text-transform:uppercase; color:var(--dim)}
 
 .status{
-  font-family:var(--mono); font-size:11px; letter-spacing:.1em; text-transform:uppercase;
-  padding:5px 10px; border:1px solid var(--line-hi); color:var(--dim); border-radius:2px;
+  font-family:var(--mono); font-size:10.5px; letter-spacing:.08em; text-transform:uppercase;
+  padding:5px 8px; border:1px solid var(--line-hi); color:var(--dim); border-radius:2px;
 }
 .status.on{color:var(--verified); border-color:color-mix(in srgb,var(--verified) 45%,transparent)}
 .status .dot{display:inline-block; width:5px; height:5px; border-radius:50%; background:currentColor; margin-right:7px; vertical-align:middle}
@@ -76,13 +76,26 @@ button.tog:hover{color:var(--ink-hi); border-color:var(--line-hi)}
 .status.live.on .dot{animation:beat 1s steps(1,end) infinite}
 @keyframes beat{0%,49%{opacity:1} 50%,100%{opacity:.15}}
 
+/* Upload is the one control a visitor is invited to touch, so it gets the only
+   filled button in the bar. Everything else here is read-only status. */
+.upload{
+  font-family:var(--mono); font-size:11.5px; letter-spacing:.11em; text-transform:uppercase;
+  font-weight:700; background:var(--hazard); color:var(--bg); border:none; border-radius:2px;
+  padding:6px 12px; cursor:pointer; display:inline-flex; align-items:center; gap:6px;
+}
+.upload:hover{filter:brightness(1.12)}
+.upload .caret{font-size:9px; opacity:.8}
+
 .srcwrap{position:relative}
 .srcmenu{
-  position:absolute; right:0; top:calc(100% + 7px); width:310px; z-index:40;
+  position:absolute; right:0; top:calc(100% + 8px); width:320px; z-index:60;
   background:var(--panel); border:1px solid var(--line-hi); border-radius:3px;
   padding:13px; display:flex; flex-direction:column; gap:8px;
-  box-shadow:0 10px 34px rgba(0,0,0,.45);
+  box-shadow:0 12px 38px rgba(0,0,0,.5);
 }
+/* [hidden] loses to .srcmenu{display:flex} on specificity — without this the
+   panel is permanently open and the toggle looks broken. */
+.srcmenu[hidden]{display:none}
 .srcmenu h4{
   margin:0; font-family:var(--mono); font-size:10.5px; letter-spacing:.13em;
   text-transform:uppercase; color:var(--dim); font-weight:600;
@@ -91,23 +104,40 @@ button.tog:hover{color:var(--ink-hi); border-color:var(--line-hi)}
   font-family:var(--mono); font-size:11.5px; background:var(--panel-2); color:var(--ink);
   border:1px solid var(--line); border-radius:2px; padding:6px 7px; width:100%;
 }
-.srcmenu select option{padding:3px 2px}
 .srcmenu .up{
-  font-family:var(--mono); font-size:10.5px; letter-spacing:.09em; text-transform:uppercase;
+  font-family:var(--mono); font-size:10px; letter-spacing:.09em; text-transform:uppercase;
   color:var(--dim); display:flex; flex-direction:column; gap:5px;
 }
 .srcmenu input[type=file]{font-family:var(--mono); font-size:10.5px; color:var(--dim)}
 .srcrow{display:flex; gap:7px}
-.srcrow input{flex:0 0 105px}
-.go{
-  flex:1; font-family:var(--mono); font-size:11px; letter-spacing:.1em; text-transform:uppercase;
-  background:var(--protect); color:var(--bg); border:none; border-radius:2px;
-  padding:7px 10px; cursor:pointer; font-weight:600;
-}
-.go:hover{filter:brightness(1.12)}
-.go:disabled{opacity:.45; cursor:default}
-.go.stop{background:var(--line-hi); color:var(--ink)}
+.srcrow input{flex:0 0 110px}
 .srcmsg{margin:0; font-size:11px; color:var(--dim); line-height:1.4}
+.srcmsg.err{color:var(--critical)}
+.srcmsg.ok{color:var(--protect)}
+
+.chip-src{
+  display:inline-flex; align-items:center; gap:7px; max-width:230px;
+  font-family:var(--mono); font-size:11px; color:var(--ink);
+  background:var(--panel); border:1px solid var(--line-hi); border-radius:2px; padding:5px 6px 5px 9px;
+}
+.chip-src span{overflow:hidden; text-overflow:ellipsis; white-space:nowrap; direction:rtl}
+.chip-src .x{
+  background:none; border:none; color:var(--dim); cursor:pointer; font-size:14px;
+  line-height:1; padding:0 2px;
+}
+.chip-src .x:hover{color:var(--critical)}
+
+.go{
+  font-family:var(--mono); font-size:11px; letter-spacing:.1em; text-transform:uppercase;
+  border:1px solid var(--line-hi); border-radius:2px; padding:6px 12px; cursor:pointer;
+  font-weight:600; background:var(--panel); color:var(--ink);
+}
+.go.run{background:var(--protect); color:var(--bg); border-color:transparent}
+.go.run:hover:not(:disabled){filter:brightness(1.12)}
+.go.stop{background:var(--panel); color:var(--dim)}
+.go.stop:not(:disabled){color:var(--critical); border-color:color-mix(in srgb,var(--critical) 50%,transparent)}
+.go.ghost{background:var(--panel-2); color:var(--ink); flex:1}
+.go:disabled{opacity:.4; cursor:default}
 .srcmsg.err{color:var(--critical)}
 .srcmsg.ok{color:var(--protect)}
 
@@ -176,10 +206,6 @@ button.tog:hover{color:var(--ink-hi); border-color:var(--line-hi)}
   font-family:var(--mono); font-size:11px; letter-spacing:.13em; text-transform:uppercase; color:var(--dim);
 }
 .pane-hd .tag{margin-left:auto; color:var(--dim); letter-spacing:.1em}
-#clipPick{
-  font-family:var(--mono); font-size:10.5px; background:var(--panel-2); color:var(--ink);
-  border:1px solid var(--line-hi); border-radius:2px; padding:2px 5px; max-width:230px;
-}
 .pane-bd{flex:1; min-height:0; position:relative}
 
 /* ---------- video ---------- */
@@ -291,30 +317,35 @@ button.tog:hover{color:var(--ink-hi); border-color:var(--line-hi)}
     <div class="sep"></div>
     <div class="clock"><b id="clk">00:00.0</b><small>incident elapsed</small></div>
     <div class="spacer"></div>
-    <div class="status live" id="live"><i class="dot"></i><span id="liveLbl">Standby</span></div>
+
     <div class="srcwrap">
-      <button class="status tog" id="srcBtn" type="button" aria-haspopup="true"
-              aria-expanded="false">Source</button>
+      <button class="upload" id="srcBtn" type="button" aria-haspopup="true" aria-expanded="false">
+        Upload <span class="caret">▾</span></button>
       <div class="srcmenu" id="srcMenu" hidden>
-        <h4>Run analysis on</h4>
-        <select id="srcList" size="6" aria-label="Available clips"></select>
-        <label class="up">Upload a video
+        <h4>Choose a video</h4>
+        <select id="srcList" size="5" aria-label="Available clips"></select>
+        <label class="up">Or upload from this computer
           <input type="file" id="srcFile" accept="video/mp4,video/quicktime,video/x-matroska">
         </label>
-        <input type="text" id="srcPath" placeholder="or a path, e.g. data/video_clips/scenario_2.mp4">
+        <input type="text" id="srcPath" placeholder="Or type a path inside the project">
         <div class="srcrow">
           <input type="number" id="srcWind" placeholder="wind °from" min="0" max="359">
-          <button class="go" id="srcRun" type="button">Run</button>
-          <button class="go stop" id="srcStop" type="button">Stop</button>
+          <button class="go ghost" id="srcUse" type="button">Use this</button>
         </div>
-        <p class="srcmsg" id="srcMsg">Re-runs the full pipeline. Replaces the current incident.</p>
+        <p class="srcmsg" id="srcMsg">Picking a video does not start it. Press Run afterwards.</p>
       </div>
     </div>
-    <div class="status" id="egress"><i class="dot"></i>Video egress —</div>
-    <div class="status on"><i class="dot"></i>DGX Spark · on premise</div>
+
+    <div class="chip-src" id="srcChip" hidden><span id="srcChipName"></span>
+      <button class="x" id="srcClear" type="button" aria-label="Clear selection">×</button></div>
+    <button class="go run" id="srcRun" type="button" disabled>Run</button>
+    <button class="go stop" id="srcStop" type="button" disabled>Stop</button>
+
+    <div class="status live" id="live"><i class="dot"></i><span id="liveLbl">Standby</span></div>
+    <div class="status" id="egress"><i class="dot"></i>Egress —</div>
+    <div class="status on" title="All inference runs on the DGX Spark"><i class="dot"></i>On-prem</div>
     <button class="status tog" id="theme" type="button" aria-label="Switch colour theme">
       <span id="themeIcon">◐</span> <span id="themeLbl">Light</span></button>
-    <div class="status" id="link"><i class="dot"></i>Bus offline</div>
   </header>
 
   <div class="agents" id="agents"></div>
@@ -322,9 +353,7 @@ button.tog:hover{color:var(--ink-hi); border-color:var(--line-hi)}
   <div class="grid">
 
     <section class="pane" id="pane-video">
-      <div class="pane-hd">Camera feed
-        <select id="clipPick" aria-label="Choose clip" hidden></select>
-        <span class="tag" id="cam">no stream</span></div>
+      <div class="pane-hd">Camera feed <span class="tag" id="cam">no stream</span></div>
       <div class="pane-bd"><div class="stage">
         <video id="vid" muted playsinline preload="metadata"></video>
         <div class="void" id="void">
@@ -426,18 +455,8 @@ function loadClip(url){
    file stutters badly over an SSH tunnel, so the smallest is the safest default. */
 (async function discoverClips(){
   try{
-    const r = await fetch("/clip-manifest");
-    const {clips} = await r.json();
-    if(!clips || !clips.length) return;
-    const pick = $("clipPick");
-    pick.hidden = false;
-    for(const c of clips){
-      const o=document.createElement("option");
-      o.value=c.url; o.textContent=`${c.name} · ${c.mb} MB`;
-      pick.appendChild(o);
-    }
-    pick.addEventListener("change", ()=>loadClip(pick.value));
-    loadClip(clips[0].url);
+    const {clips} = await (await fetch("/clip-manifest")).json();
+    if(clips && clips.length) loadClip(clips[0].url);   // smallest first: safest over a tunnel
   }catch(e){ /* no manifest route: leave the empty state up */ }
 })();
 
@@ -793,9 +812,28 @@ setInterval(()=>{
   }
 }, 700);
 
-/* ---------- source menu ---------- */
+/* ---------- source selection ----------
+   Picking a video only arms it. Run is a separate, deliberate press, because
+   starting an analysis wipes the current incident off the board. */
 const srcMenu=$("srcMenu"), srcBtn=$("srcBtn"), srcMsg=$("srcMsg");
-function msg(text, cls){ srcMsg.className = "srcmsg" + (cls?" "+cls:""); srcMsg.textContent=text; }
+const SRC = {path:null, url:null, name:null};
+
+function msg(text, cls){ srcMsg.className="srcmsg"+(cls?" "+cls:""); srcMsg.textContent=text; }
+
+function setSource(path, url, name){
+  SRC.path=path; SRC.url=url; SRC.name=name||path.split("/").pop();
+  $("srcChip").hidden=false;
+  $("srcChipName").textContent=SRC.name;
+  $("srcChipName").title=path;
+  $("srcRun").disabled=false;
+  if(url) loadClip(url);
+}
+function clearSource(){
+  SRC.path=SRC.url=SRC.name=null;
+  $("srcChip").hidden=true; $("srcRun").disabled=true; $("srcPath").value="";
+}
+$("srcClear").addEventListener("click", clearSource);
+
 function toggleMenu(open){
   const show = open ?? srcMenu.hidden;
   srcMenu.hidden = !show;
@@ -804,27 +842,29 @@ function toggleMenu(open){
 }
 srcBtn.addEventListener("click", e=>{ e.stopPropagation(); toggleMenu(); });
 document.addEventListener("click", e=>{
-  if(!srcMenu.hidden && !srcMenu.contains(e.target) && e.target!==srcBtn) toggleMenu(false);
+  if(!srcMenu.hidden && !srcMenu.contains(e.target) && !srcBtn.contains(e.target)) toggleMenu(false);
 });
 document.addEventListener("keydown", e=>{ if(e.key==="Escape") toggleMenu(false); });
 
 async function refreshClips(){
   try{
     const {clips} = await (await fetch("/clip-manifest")).json();
-    const list=$("srcList"); const keep=list.value; list.replaceChildren();
+    const list=$("srcList"); list.replaceChildren();
     for(const c of clips||[]){
       const o=document.createElement("option");
       o.value=c.url.replace(/^\/video\//,"data/video_clips/").replace(/^\/clips\//,"dashboard/clips/");
-      o.textContent=`${c.name} · ${c.mb} MB`; o.dataset.url=c.url;
+      o.textContent=`${c.name} · ${c.mb} MB`;
+      o.dataset.url=c.url; o.dataset.name=c.name;
       list.appendChild(o);
     }
-    if(keep) list.value=keep;
-  }catch(e){ /* leave the list as-is */ }
+  }catch(e){ /* leave list as-is */ }
 }
 
+/* choosing from the list is a decision — take it and close */
 $("srcList").addEventListener("change", ()=>{
-  const o=$("srcList").selectedOptions[0];
-  if(o){ $("srcPath").value=o.value; loadClip(o.dataset.url); }
+  const o=$("srcList").selectedOptions[0]; if(!o) return;
+  setSource(o.value, o.dataset.url, o.dataset.name);
+  toggleMenu(false);
 });
 
 $("srcFile").addEventListener("change", async ()=>{
@@ -832,34 +872,46 @@ $("srcFile").addEventListener("change", async ()=>{
   msg(`Uploading ${f.name}…`);
   const fd=new FormData(); fd.append("file", f);
   try{
-    const r=await fetch("/upload",{method:"POST",body:fd});
-    const j=await r.json();
+    const j=await (await fetch("/upload",{method:"POST",body:fd})).json();
     if(!j.ok){ msg(j.error||"Upload failed","err"); return; }
-    $("srcPath").value=j.path; loadClip(j.url); await refreshClips();
-    msg(`${f.name} uploaded (${j.mb} MB). Press Run to analyse it.`,"ok");
+    setSource(j.path, j.url, f.name);
+    await refreshClips();
+    toggleMenu(false);                       // upload succeeded — get out of the way
   }catch(e){ msg("Upload failed: "+e.message,"err"); }
 });
 
+$("srcUse").addEventListener("click", ()=>{
+  const p=$("srcPath").value.trim();
+  if(!p){ msg("Type a path, choose a clip, or upload a file.","err"); return; }
+  setSource(p, null, p.split("/").pop());
+  toggleMenu(false);
+});
+
 $("srcRun").addEventListener("click", async ()=>{
-  const path=$("srcPath").value.trim();
-  if(!path){ msg("Choose a clip, upload one, or type a path.","err"); return; }
-  const body={path}; const w=$("srcWind").value; if(w) body.wind_from=Number(w);
-  $("srcRun").disabled=true; msg("Starting analysis…");
+  if(!SRC.path) return;
+  const body={path:SRC.path}; const w=$("srcWind").value; if(w) body.wind_from=Number(w);
+  $("srcRun").disabled=true;
   try{
     const j=await (await fetch("/run",{method:"POST",
       headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)})).json();
-    if(!j.ok){ msg(j.error||"Could not start","err"); }
-    else { msg(`Analysing ${j.video}. First detection takes ~30 s.`,"ok"); toggleMenu(false); }
-  }catch(e){ msg("Could not start: "+e.message,"err"); }
-  finally{ $("srcRun").disabled=false; }
+    if(!j.ok){ msg(j.error||"Could not start","err"); toggleMenu(true); $("srcRun").disabled=false; }
+    else { $("srcStop").disabled=false; }
+  }catch(e){ msg("Could not start: "+e.message,"err"); toggleMenu(true); $("srcRun").disabled=false; }
 });
 
 $("srcStop").addEventListener("click", async ()=>{
-  try{
-    const j=await (await fetch("/stop",{method:"POST"})).json();
-    msg(j.stopped ? "Analysis stopped." : "Nothing was running.");
-  }catch(e){ msg("Stop failed: "+e.message,"err"); }
+  try{ await fetch("/stop",{method:"POST"}); }catch(e){}
+  $("srcStop").disabled=true; $("srcRun").disabled=!SRC.path;
 });
+
+/* keep the buttons honest about what the server is actually doing */
+setInterval(async ()=>{
+  try{
+    const st=await (await fetch("/run-status")).json();
+    $("srcStop").disabled=!st.running;
+    if(!st.running && SRC.path) $("srcRun").disabled=false;
+  }catch(e){}
+}, 2500);
 
 /* ---------- theme ----------
    Follows the OS by default; the toggle overrides and persists where storage
@@ -886,10 +938,9 @@ $("theme").addEventListener("click", ()=>{
 let ws, retry=0;
 function connect(){
   ws = new WebSocket(`${location.protocol==="https:"?"wss":"ws"}://${location.host}/ws`);
-  ws.onopen = ()=>{ retry=0; const l=$("link"); l.classList.add("on");
-                    l.innerHTML='<i class="dot"></i>Bus live'; };
-  ws.onclose = ()=>{ const l=$("link"); l.classList.remove("on");
-                     l.innerHTML='<i class="dot"></i>Bus offline';
+  ws.onopen = ()=>{ retry=0; $("liveLbl").textContent = LIVE.on ? "Live" : "Standby"; };
+  ws.onclose = ()=>{ LIVE.on=false; $("live").classList.remove("on");
+                     $("liveLbl").textContent="No bus";
                      setTimeout(connect, Math.min(4000, 400*++retry)); };
   ws.onmessage = e => { try{ handle(JSON.parse(e.data)); }catch(err){ console.error(err); } };
 }
