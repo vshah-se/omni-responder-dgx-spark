@@ -18,6 +18,7 @@ Flags:
 
 import argparse
 import asyncio
+import contextlib
 import json
 import pathlib
 import shutil
@@ -31,7 +32,14 @@ from fastapi.staticfiles import StaticFiles
 
 HERE = pathlib.Path(__file__).parent
 REPO = HERE.parent
-app = FastAPI(title="Omni-Responder Bus")
+
+@contextlib.asynccontextmanager
+async def lifespan(app: FastAPI):
+    if CFG["replay"] and CFG["fixture"]:
+        asyncio.create_task(replay_fixture())
+    yield
+
+app = FastAPI(title="Omni-Responder Bus", lifespan=lifespan)
 
 clients: set[WebSocket] = set()
 history: list[dict] = []          # replayed to late joiners so a reconnect isn't a blank screen
@@ -243,10 +251,7 @@ async def replay_fixture():
             return
 
 
-@app.on_event("startup")
-async def startup():
-    if CFG["replay"] and CFG["fixture"]:
-        asyncio.create_task(replay_fixture())
+
 
 
 if __name__ == "__main__":
