@@ -5,6 +5,14 @@
 
 ---
 
+## 🖥️ Live Demo
+
+![Omni-Responder Dashboard — CODE RED dispatch for a moving SUV vs utility truck collision](docs/dashboard-screenshot.png)
+
+> **Above:** A real run on DGX Spark. Cosmos Reasoner 2 identifies a two-vehicle collision at 5th Ave & Market St, triggers CODE RED, and dispatches Hazmat, Traffic (ROUTE-BLOCK-101 with green-wave corridor), and Comms (CAD brief to 5 units) — all within 200ms, zero bytes sent to cloud.
+
+---
+
 ## 🌟 Overview
 
 **Omni-Responder** is an edge-native, real-time emergency dispatch platform designed for the **NVIDIA DGX Spark** (Grace Blackwell GB10 with 128GB Unified Memory). It continuously analyzes surveillance and traffic camera video feeds locally, identifies physical crises (multi-vehicle pileups, chemical tanker ruptures, structural fires), and autonomously coordinates specialized sub-agents—**with zero raw surveillance video ever leaving the edge device**.
