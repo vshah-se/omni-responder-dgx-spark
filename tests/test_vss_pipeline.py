@@ -184,3 +184,25 @@ def test_failed_probe_is_not_reported_as_all_clear(monkeypatch):
     monkeypatch.setattr(p, "deep_sequence_diagnosis", vlm)
     summary = p.analyze_incident("data/video_clips/x.mp4")
     assert summary.severity == "CRITICAL", "must keep probing past a failed VLM call"
+
+
+def test_passing_tow_truck_is_not_an_emergency():
+    """Real aic21_01 output: a tow truck hauling a car became a CODE AMBER callout."""
+    p = VSSPerceptionPipeline()
+    raw = json.dumps({
+        "raw_summary": "The highway is busy with traffic moving smoothly in both directions. "
+                       "Vehicles include cars, trucks, and a white tow truck towing a red car. "
+                       "There are no collisions, stopped vehicles, or emergency responders visible.",
+        "location": "Highway", "camera_id": "x",
+        "vehicles_involved": 0, "hazard_indicators": [],
+        "crisis_type": "No crisis detected; normal traffic flow on a multi-lane highway",
+        "severity": "LOW", "confidence": 0.97,
+    })
+    assert p.parse_vlm_json_output(raw).severity == "LOW"
+
+
+def test_negated_responders_in_a_list_stay_low():
+    p = VSSPerceptionPipeline()
+    assert p._responders_present("there are no collisions, stopped vehicles, or emergency responders visible") is False
+    assert p._responders_present("a police car blocks the left lane") is True
+    assert p._responders_present("traffic is normal. an ambulance is parked on the shoulder") is True

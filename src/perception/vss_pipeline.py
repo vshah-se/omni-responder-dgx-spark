@@ -1,5 +1,6 @@
 import os
 import json
+import re
 import time
 import base64
 import subprocess
@@ -250,18 +251,16 @@ Output ONLY a STRICT JSON object with these exact keys, in this order:
         "no obstruction", "no visible signs of", "no signs of", "no damage",
         "normal traffic", "traffic flows normally", "traffic is flowing normally",
     )
-    # Evidence that something IS happening, even with nothing wrecked in frame
+    # Evidence that something IS happening, even with nothing wrecked in frame.
+    # A tow truck is deliberately NOT here: one hauling a car along the motorway is
+    # ordinary traffic, and listing it turned a clear road into a CODE AMBER callout.
     RESPONDER_PHRASES = (
         "police", "fire truck", "fire engine", "fire apparatus", "ambulance", "paramedic",
         "emergency vehicle", "emergency responder", "emergency personnel", "emergency lights",
-        "flashing", "beacon", "tow truck",
+        "flashing", "beacon",
     )
-    # ...unless the model is stating their ABSENCE
-    NEGATED_RESPONDER_PHRASES = (
-        "no police", "no emergency", "no fire truck", "no fire engine", "no ambulance",
-        "no responder", "no flashing", "no visible emergency", "without emergency",
-        "no tow truck", "no beacon",
-    )
+    # Words that flip a sentence to describing an ABSENCE
+    NEGATION_MARKERS = ("no ", "not ", "without ", "absent", "none ", "n't ")
 
     def scan_motion_and_anomaly_points(self, video_path: str) -> Tuple[bool, float, str]:
         """Locates the most incident-like moment in the feed.
@@ -388,6 +387,19 @@ Output ONLY a STRICT JSON object with these exact keys, in this order:
                 confidence=0.0
             )
 
+    def _responders_present(self, scene_text: str) -> bool:
+        """True only where responders are described as PRESENT.
+
+        Scoped per sentence, because a flat substring test reads "there are no
+        collisions, stopped vehicles, or emergency responders visible" as responders
+        being on scene and escalates a clear road to CODE AMBER.
+        """
+        for sentence in re.split(r"[.;]", scene_text):
+            if any(phrase in sentence for phrase in self.RESPONDER_PHRASES) and \
+                    not any(marker in sentence for marker in self.NEGATION_MARKERS):
+                return True
+        return False
+
     def camera_id_for(self, video_path: str) -> str:
         """Edge camera identity derived from the feed filename. The VLM invents a generic
         camera name from the pixels, so both entry points must overwrite it with this."""
@@ -502,10 +514,7 @@ Output ONLY a STRICT JSON object with these exact keys, in this order:
             # Deliberately narrow - a scene with responders is never flattened to all-clear.
             scene_text = f"{vlm_summary} {vlm_crisis}".lower()
             denies_incident = any(phrase in scene_text for phrase in self.NO_INCIDENT_PHRASES)
-            shows_responders = (
-                any(phrase in scene_text for phrase in self.RESPONDER_PHRASES)
-                and not any(phrase in scene_text for phrase in self.NEGATED_RESPONDER_PHRASES)
-            )
+            shows_responders = self._responders_present(scene_text)
             if (severity_str in ["HIGH", "CRITICAL"] and vehicles_count == 0
                     and not vlm_hazards and denies_incident and not shows_responders):
                 severity_str = "LOW"
