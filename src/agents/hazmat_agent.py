@@ -1,3 +1,4 @@
+import re
 import json
 import os
 from typing import Dict, Any, List
@@ -15,6 +16,26 @@ class HazmatAgent:
         "greenish", "acrid", "pungent", "oily", "corrosion"
     }
 
+    # Words that flip the meaning of the hazard keyword that follows them
+    NEGATION_MARKERS = ("no ", "not ", "without ", "absent ", "none ", "n't ", "non-", "clear of ")
+
+    def _hazard_keyword_present(self, text: str) -> bool:
+        """Returns True only if a hazard keyword appears in a non-negated sentence.
+
+        A flat set intersection reads 'no fuel leak detected' as a hazmat event.
+        Scoping per sentence prevents that: a negation marker must not immediately
+        precede the keyword within the same sentence fragment.
+        """
+        for sentence in re.split(r"[.;,]", text.lower()):
+            for kw in self.HAZARD_KEYWORDS:
+                if kw in sentence:
+                    # Check whether any negation marker appears before the keyword
+                    kw_pos = sentence.index(kw)
+                    preceding = sentence[:kw_pos]
+                    if not any(marker in preceding for marker in self.NEGATION_MARKERS):
+                        return True
+        return False
+
     def __init__(self, db_path: str = settings.hazmat_db_path):
         self.db_path = db_path
         self.db = self._load_database()
@@ -31,14 +52,13 @@ class HazmatAgent:
         if not visual_indicators or severity in ["LOW", "NORMAL"]:
             return self._all_clear_response()
 
-        # 2. Check if ANY actual hazard/chemical keyword is present in the visual indicators
+        # 2. Check if ANY actual hazard/chemical keyword is present WITHOUT negation
         raw_text = " ".join(visual_indicators).lower()
-        words = set(raw_text.replace(",", " ").replace(".", " ").replace("-", " ").split())
-        matched_hazard_keywords = words.intersection(self.HAZARD_KEYWORDS)
-
-        # If no hazard keywords found (e.g. only 'vehicle on shoulder', 'traffic', 'person standing'), return ALL CLEAR
-        if not matched_hazard_keywords:
+        if not self._hazard_keyword_present(raw_text):
             return self._all_clear_response()
+
+        # Also build a word set for the database overlap check below
+        words = set(raw_text.replace(",", " ").replace(".", " ").replace("-", " ").split())
 
         # 3. Match against specific chemical records in ERG database
         for entry in self.db:

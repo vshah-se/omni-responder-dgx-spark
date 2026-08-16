@@ -1,4 +1,5 @@
 import argparse
+import os
 import sys
 import json
 import time
@@ -142,7 +143,7 @@ def run_live_stream_simulation(video_path: str, location: Optional[str], speed: 
     else:
         print("\n=== Omni-Responder: Live Edge Ingestion Active ===\n")
 
-    print(f"\n📡 Connecting to Edge Camera Stream: {video_path}")
+    print(f"\n📡 Connecting to Edge Camera Stream: {os.path.basename(video_path)}")
     if location:
         print(f"📍 Registered Camera Location: {location}")
     else:
