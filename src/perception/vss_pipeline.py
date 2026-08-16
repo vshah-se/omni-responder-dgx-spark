@@ -515,7 +515,18 @@ Output ONLY a STRICT JSON object with these exact keys, in this order:
             scene_text = f"{vlm_summary} {vlm_crisis}".lower()
             denies_incident = any(phrase in scene_text for phrase in self.NO_INCIDENT_PHRASES)
             shows_responders = self._responders_present(scene_text)
-            if (severity_str in ["HIGH", "CRITICAL"] and vehicles_count == 0
+            # vehicles_count is deliberately NOT part of this test. It used to require
+            # vehicles_count == 0, which made the net almost inert: a traffic camera
+            # nearly always has vehicles in frame, and the model does not reliably
+            # distinguish "vehicles present" from "vehicles involved in an incident"
+            # (hence the three parsing fallbacks above). Gating the safety net on the
+            # least reliable field in the response defeated the safety net. On aic21_93
+            # the model returned "There are no visible signs of a collision" alongside
+            # severity CRITICAL, and the net did not fire because it also reported a
+            # vehicle. The remaining conditions — an emergency verdict, no hazard to
+            # point at, prose that denies an incident, and no responders on scene —
+            # are a genuine self-contradiction on their own.
+            if (severity_str in ["HIGH", "CRITICAL"]
                     and not vlm_hazards and denies_incident and not shows_responders):
                 severity_str = "LOW"
 
@@ -536,16 +547,28 @@ Output ONLY a STRICT JSON object with these exact keys, in this order:
                 confidence=vlm_confidence,
                 timestamp=datetime.datetime.now().strftime("%H:%M:%S")
             )
-        except Exception:
+        except Exception as e:
+            # An unreadable response is a PERCEPTION FAILURE, not an incident. This
+            # used to return HIGH with one vehicle, so any malformed reply — including
+            # one whose text read "The road is completely clear" — manufactured an
+            # emergency and dispatched on it. Degrade the same way a failed VLM probe
+            # does (VLM_CONNECTION_OFFLINE above): LOW so nothing escalates, zero
+            # confidence so the dashboard can show the run as degraded rather than calm.
+            import sys
+            sys.stderr.write(
+                f"\n\033[1;31m[WARN] Could not parse Cosmos VLM response "
+                f"({type(e).__name__}): {e}\033[0m\n"
+            )
             return VisualContextSummary(
                 location=location_hint or "Roadway Surveillance Scene",
                 camera_id="CAM-DGX-SPARK-01",
-                crisis_type="Roadway Incident Observation",
-                severity="HIGH",
-                vehicles_involved=1,
+                crisis_type="VLM_RESPONSE_UNPARSED",
+                severity="LOW",
+                vehicles_involved=0,
                 hazard_indicators=[],
-                raw_summary=raw_response[:250],
-                confidence=0.90,
+                raw_summary=f"ERROR: Cosmos VLM response could not be parsed "
+                            f"({type(e).__name__}). Raw: {raw_response[:200]}",
+                confidence=0.0,
                 timestamp=datetime.datetime.now().strftime("%H:%M:%S")
             )
 
