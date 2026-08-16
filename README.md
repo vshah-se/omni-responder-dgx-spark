@@ -26,10 +26,12 @@ flowchart TD
         C --> D["🧪 Hazmat Sub-Agent"]
         C --> E["🚦 Traffic Sub-Agent"]
         C --> F["📻 Comms CAD Sub-Agent"]
+        C --> G["📱 Telegram Notifier"]
         
         D --> D1["Local ERG 2024 Chemical DB<br>(data/hazmat_db.json)"]
         E --> E1["City Digital Signs (VMS) & Signal Controls"]
         F --> F1["911 CAD Dispatch Cards (CODE RED / AMBER)"]
+        G --> G1["Live Field Alerts to Responders"]
     end
 ```
 
@@ -48,6 +50,7 @@ flowchart TD
    - 🧪 **Hazmat Agent**: Cross-references visual indicators (gas plumes, liquid colors, corrosion) against the Emergency Response Guidebook (UN1017 Chlorine, UN1203 Gasoline, UN1830 Sulfuric Acid, UN3480 Li-ion), prescribing Level A/B PPE and isolation standoff perimeters.
    - 🚦 **Traffic Agent**: Generates automated perimeter closures, Variable Message Sign (VMS) detour alerts, and emergency green-wave signal corridors.
    - 📻 **Comms Agent**: Synthesizes 911 Computer-Aided Dispatch (CAD) cards with priority codes and target responder unit routing.
+   - 📱 **Telegram Notifier**: Broadcasts the finalized CAD dispatch summaries directly to field responders via secure Telegram API routing (automatically muted for routine 'All Clear' events).
 
 ---
 
