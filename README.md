@@ -163,16 +163,6 @@ deploy/docker/scripts/dev-profile.sh up -p base \
 
 ---
 
-## 👥 Hackathon Team Tracks
-
-| Track | Branch | Focus |
-| :--- | :--- | :--- |
-| **🧑‍💻 Hacker 1: Perception** | `feat/h1-perception-vss` | Video ingestion, frame extraction, Cosmos Reasoner NIM API (`src/perception/`) |
-| **🧑‍💻 Hacker 2: Orchestration** | `feat/h2-agent-orchestrator` | Nemotron master loop, Hazmat ERG DB, Traffic & Comms CAD sub-agents (`src/agents/`, `src/orchestrator/`) |
-| **🧑‍💻 Hacker 3: Frontend / UI** | `feat/h3-command-dashboard` | Emergency Operations Command Center UI, interactive maps, live video player |
-
----
-
 ## 🛡️ License
 
 Apache 2.0 License.
