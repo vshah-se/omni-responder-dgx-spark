@@ -115,3 +115,16 @@ def test_escalation_reports_all_clear_when_every_probe_is_quiet(monkeypatch):
     monkeypatch.setattr(p, "deep_sequence_diagnosis",
                         lambda frames, hint=None: VisualContextSummary(severity="LOW"))
     assert p.analyze_incident("data/video_clips/aic21_80.mp4").severity == "LOW"
+
+
+def test_guard_never_flattens_a_scene_with_responders():
+    """A fire truck on scene must not be downgraded to all-clear by the safety net."""
+    p = VSSPerceptionPipeline()
+    raw = json.dumps({
+        "raw_summary": "Police cars and a fire truck with flashing lights are on the shoulder. "
+                       "No damage is visible from this angle.",
+        "location": "Highway", "camera_id": "x",
+        "vehicles_involved": 0, "hazard_indicators": [],
+        "crisis_type": "Emergency response in progress", "severity": "HIGH", "confidence": 0.9,
+    })
+    assert p.parse_vlm_json_output(raw).severity == "HIGH"

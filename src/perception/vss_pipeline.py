@@ -58,18 +58,18 @@ Report ONLY what is physically visible in these frames. Do not infer an emergenc
 
 Work in this order:
 1. First write raw_summary: 2-3 sentences describing exactly what is visible.
-2. Then count vehicles_involved: vehicles actually damaged, stopped, or part of an incident. If traffic is simply flowing, this is 0.
-3. Then list hazard_indicators: only hazards you can SEE (smoke, fire, fluid, debris, wreckage). Empty array if none.
+2. Then count vehicles_involved: vehicles that are damaged, stopped, or otherwise part of an incident, including any emergency vehicles attending the scene. If traffic is simply flowing, this is 0.
+3. Then list hazard_indicators: only things you can SEE (smoke, fire, fluid, debris, wreckage, flashing emergency lights, stopped vehicle). Empty array if none.
 4. Then set crisis_type: your own short description of the scene.
 5. Finally set severity, consistent with what you just wrote:
-   - LOW: traffic flowing normally. No accident, no wreckage, no hazard. THIS IS THE CORRECT ANSWER FOR ORDINARY TRAFFIC.
-   - MEDIUM: a vehicle stopped on the shoulder, hazard lights, a tow operation, emergency responders present, or hazardous weather.
+   - LOW: traffic flowing normally. No accident, no stopped vehicle, no responders, no hazard. THIS IS THE CORRECT ANSWER FOR ORDINARY TRAFFIC.
+   - MEDIUM: a vehicle stopped on the shoulder, hazard lights, a tow operation, emergency responders or flashing emergency lights present, or hazardous weather.
    - HIGH or CRITICAL: you can SEE a collision, wreckage, debris blocking lanes, fire, smoke, or a spill.
 
 Consistency rules (a violation means your answer is wrong):
-- If vehicles_involved is 0 AND hazard_indicators is empty, severity MUST be LOW.
-- If your raw_summary says there is no accident or no hazard, severity MUST be LOW.
-- Never use severity HIGH or CRITICAL for normally flowing traffic.
+- If your raw_summary says there is no accident and no hazard and traffic is flowing, severity MUST be LOW.
+- If you can see emergency responders, police cars, fire apparatus or flashing emergency beacons, severity is AT LEAST MEDIUM. Never LOW.
+- Do not report HIGH or CRITICAL unless you can name something visible in the frames: a collision, wreckage, debris, fire, smoke or a spill.
 
 Output ONLY a STRICT JSON object with these exact keys, in this order:
 {
@@ -241,6 +241,19 @@ Output ONLY a STRICT JSON object with these exact keys, in this order:
 
     # A scene where this share of pixels has persistently changed is worth reporting
     ANOMALY_REPORT_THRESHOLD_PCT = 3.0
+
+    # Phrases meaning the model itself saw no incident, used only to overrule a severity
+    # that contradicts the model's own description.
+    NO_INCIDENT_PHRASES = (
+        "no accident", "no collision", "no incident", "no hazard", "no emergency",
+        "no obstruction", "no visible signs of", "no signs of", "no damage",
+        "normal traffic", "traffic flows normally", "traffic is flowing normally",
+    )
+    # Evidence that something IS happening, even with nothing wrecked in frame
+    RESPONDER_PHRASES = (
+        "police", "fire truck", "fire engine", "fire apparatus", "ambulance", "paramedic",
+        "emergency vehicle", "emergency responder", "flashing", "beacon", "tow truck",
+    )
 
     def scan_motion_and_anomaly_points(self, video_path: str) -> Tuple[bool, float, str]:
         """Locates the most incident-like moment in the feed.
@@ -464,9 +477,15 @@ Output ONLY a STRICT JSON object with these exact keys, in this order:
             else:
                 vehicles_count = 1 if severity_str in ["MEDIUM", "HIGH", "CRITICAL"] else 0
 
-            # Safety net for a model echoing a severity it did not observe: an emergency
-            # with no vehicles involved and no visible hazard is self-contradictory.
-            if severity_str in ["HIGH", "CRITICAL"] and vehicles_count == 0 and not vlm_hazards:
+            # Safety net for a model echoing a severity it did not observe. Only fires on
+            # a genuine self-contradiction: an emergency verdict over a description that
+            # states there was no incident, with no vehicles and no hazard to point at.
+            # Deliberately narrow - a scene with responders is never flattened to all-clear.
+            summary_text = vlm_summary.lower()
+            denies_incident = any(phrase in summary_text for phrase in self.NO_INCIDENT_PHRASES)
+            shows_responders = any(phrase in summary_text for phrase in self.RESPONDER_PHRASES)
+            if (severity_str in ["HIGH", "CRITICAL"] and vehicles_count == 0
+                    and not vlm_hazards and denies_incident and not shows_responders):
                 severity_str = "LOW"
 
             return VisualContextSummary(
