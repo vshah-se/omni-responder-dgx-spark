@@ -132,7 +132,25 @@ python3 -m src.main --video data/video_clips/scenario_1.mp4 --json
 
 ---
 
-### 3. Running Automated Tests
+### 3. Running the Omni-Responder Dashboard (UI)
+
+To launch the web command center:
+
+```bash
+# On the DGX Spark
+python dashboard/server.py --no-replay
+```
+
+Because the DGX is a remote server, you must forward port 8080 to your local machine to view the UI.
+**On your Mac / local machine:**
+```bash
+ssh -L 8080:localhost:8080 acer01@<DGX_IP_ADDRESS>
+```
+Then open your browser to `http://localhost:8080` to access the Command Center. Click **Upload** to select a video clip and **Run** to start the autonomous pipeline.
+
+---
+
+### 4. Running Automated Tests
 
 ```bash
 # Run all perception and agent orchestration tests
@@ -160,6 +178,35 @@ deploy/docker/scripts/dev-profile.sh up -p base \
 * **Cosmos Reasoner 2 VLM (API)**: `http://localhost:30082/v1`
 * **VSS Web Chat UI**: `http://<SPARK_IP>:3000`
 * **Nemotron LLM Orchestrator**: Shared GPU 0 memory pool
+
+---
+
+## 👥 Hackathon Team Tracks
+
+| Track | Branch | Focus |
+| :--- | :--- | :--- |
+| **🧑‍💻 Hacker 1: Perception** | `feat/h1-perception-vss` | Video ingestion, frame extraction, Cosmos Reasoner NIM API (`src/perception/`) |
+| **🧑‍💻 Hacker 2: Orchestration** | `feat/h2-agent-orchestrator` | Nemotron master loop, Hazmat ERG DB, Traffic & Comms CAD sub-agents (`src/agents/`, `src/orchestrator/`) |
+| **🧑‍💻 Hacker 3: Frontend / UI** | `feat/h3-command-dashboard` | Emergency Operations Command Center UI, interactive maps, live video player |
+
+---
+
+## 📊 Datasets & Provenance
+
+Since real-world surveillance of catastrophic events is highly sensitive and restricted, we built a comprehensive test suite using publicly available and synthetic data:
+* **Video Streams (`data/video_clips/`)**: High-fidelity simulated crash scenarios and open-source highway dashcam clips. They represent challenging real-world edge cases (lighting changes, camera shake, partial occlusions).
+* **Chemical Hazards (`data/hazmat_db.json`)**: Sourced directly from the official **2024 Emergency Response Guidebook (ERG)**, mapping visual indicators to UN numbers, protective action distances, and PPE levels.
+
+---
+
+## 🚧 Known Limitations & Next Steps
+
+* **Limitations:** 
+  * The perception layer currently decodes at 1 FPS. While sufficient for incident detection, tracking individual high-speed vehicles requires a higher sampling rate.
+  * The VLM context window (16k) limits us to 4-frame bursts. We are mitigating this via intelligent frame selection (persistent pixel deviation).
+* **Next Steps:**
+  * **Audio Perception**: Ingest audio streams for tire screech and crash impact sound classification.
+  * **Dynamic VLM Prompting**: Allow the Orchestrator LLM to inject specific questions back into the VLM (e.g., "I see a spill. What color is the liquid?") in a multi-turn edge feedback loop.
 
 ---
 
