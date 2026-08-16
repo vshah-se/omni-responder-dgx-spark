@@ -36,12 +36,19 @@ class TrafficAgent:
                 ]
             }
 
-        # Emergency road closures for real critical accidents and hazmat breaches
+        # Emergency road closures for real critical accidents and hazmat breaches.
+        # A geofenced perimeter is only claimed when there is a hazmat isolation
+        # distance to enforce. With no identified material the radius is 0, and
+        # announcing a "0m isolation zone" is self-contradictory — responders
+        # still get lane closure and priority signals, but no perimeter lock.
+        has_isolation_zone = isolation_radius_meters > 0
         closure_id = f"ROUTE-BLOCK-{len(self.active_closures) + 101}"
         actions = [
             f"Digital VMS: 'INCIDENT AT {sign_location} - AVOID AREA - USE DETOUR'",
             f"Traffic Signals: Green wave priority corridor enabled for emergency responders",
-            f"Navigation Advisory: Broadcast geofenced perimeter lock ({isolation_radius_meters}m isolation zone)"
+            (f"Navigation Advisory: Broadcast geofenced perimeter lock ({isolation_radius_meters}m isolation zone)"
+             if has_isolation_zone else
+             "Navigation Advisory: Lane closure and responder access only (no hazmat isolation zone)")
         ]
 
         closure_record = {
@@ -53,7 +60,7 @@ class TrafficAgent:
         self.active_closures.append(closure_record)
 
         return {
-            "status": "EMERGENCY_PERIMETER_LOCKED",
+            "status": "EMERGENCY_PERIMETER_LOCKED" if has_isolation_zone else "EMERGENCY_LANE_CLOSURE",
             "closure_id": closure_id,
             "isolation_radius_meters": isolation_radius_meters,
             "actions_triggered": actions

@@ -79,7 +79,12 @@ class IncidentOrchestrator:
     ) -> Generator[Dict[str, Any], None, None]:
         """Streams real-time edge monitoring with live wall-clock timestamps and real video duration."""
         for event in self.perception.stream_video_feed(video_path, location_hint=location_hint, speed_multiplier=speed_multiplier):
-            if event.status in ["CRISIS_IMPACT", "ROADSIDE_ASSISTANCE", "ROUTINE_ALL_CLEAR"] and event.visual_summary:
+            # ROUTINE_ALL_CLEAR is deliberately NOT in this list. An all-clear is
+            # the pipeline concluding that nothing is happening; running the
+            # dispatch chain on it produced ERG lookups, perimeter locks and
+            # CODE RED briefs for quiet roads. main.py hid that behind a green
+            # banner while the dashboard rendered it in full.
+            if event.status in ["CRISIS_IMPACT", "ROADSIDE_ASSISTANCE"] and event.visual_summary:
                 full_dispatch = self.process_incident(
                     event.visual_summary,
                     location_hint=location_hint,

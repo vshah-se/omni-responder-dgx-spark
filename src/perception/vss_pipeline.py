@@ -252,7 +252,14 @@ Output ONLY a STRICT JSON object with these exact keys, in this order:
     # Evidence that something IS happening, even with nothing wrecked in frame
     RESPONDER_PHRASES = (
         "police", "fire truck", "fire engine", "fire apparatus", "ambulance", "paramedic",
-        "emergency vehicle", "emergency responder", "flashing", "beacon", "tow truck",
+        "emergency vehicle", "emergency responder", "emergency personnel", "emergency lights",
+        "flashing", "beacon", "tow truck",
+    )
+    # ...unless the model is stating their ABSENCE
+    NEGATED_RESPONDER_PHRASES = (
+        "no police", "no emergency", "no fire truck", "no fire engine", "no ambulance",
+        "no responder", "no flashing", "no visible emergency", "without emergency",
+        "no tow truck", "no beacon",
     )
 
     def scan_motion_and_anomaly_points(self, video_path: str) -> Tuple[bool, float, str]:
@@ -481,12 +488,21 @@ Output ONLY a STRICT JSON object with these exact keys, in this order:
             # a genuine self-contradiction: an emergency verdict over a description that
             # states there was no incident, with no vehicles and no hazard to point at.
             # Deliberately narrow - a scene with responders is never flattened to all-clear.
-            summary_text = vlm_summary.lower()
-            denies_incident = any(phrase in summary_text for phrase in self.NO_INCIDENT_PHRASES)
-            shows_responders = any(phrase in summary_text for phrase in self.RESPONDER_PHRASES)
+            scene_text = f"{vlm_summary} {vlm_crisis}".lower()
+            denies_incident = any(phrase in scene_text for phrase in self.NO_INCIDENT_PHRASES)
+            shows_responders = (
+                any(phrase in scene_text for phrase in self.RESPONDER_PHRASES)
+                and not any(phrase in scene_text for phrase in self.NEGATED_RESPONDER_PHRASES)
+            )
             if (severity_str in ["HIGH", "CRITICAL"] and vehicles_count == 0
                     and not vlm_hazards and denies_incident and not shows_responders):
                 severity_str = "LOW"
+
+            # Responders on scene mean something happened, whatever the traffic is doing.
+            # The rubric asks for MEDIUM here but the model does not reliably comply, so
+            # the floor is enforced rather than requested.
+            if severity_str == "LOW" and shows_responders:
+                severity_str = "MEDIUM"
 
             return VisualContextSummary(
                 location=vlm_location,

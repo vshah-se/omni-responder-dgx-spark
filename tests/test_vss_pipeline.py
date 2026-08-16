@@ -128,3 +128,28 @@ def test_guard_never_flattens_a_scene_with_responders():
         "crisis_type": "Emergency response in progress", "severity": "HIGH", "confidence": 0.9,
     })
     assert p.parse_vlm_json_output(raw).severity == "HIGH"
+
+
+def test_responders_on_scene_raise_low_to_medium():
+    """scenario_2: model described a fire truck and still returned LOW."""
+    p = VSSPerceptionPipeline()
+    raw = json.dumps({
+        "raw_summary": "A fire truck is parked at the intersection while other cars pass.",
+        "location": "Intersection", "camera_id": "x",
+        "vehicles_involved": 0, "hazard_indicators": [],
+        "crisis_type": "Fire truck present at an intersection with normal traffic flow",
+        "severity": "LOW", "confidence": 0.9,
+    })
+    assert p.parse_vlm_json_output(raw).severity == "MEDIUM"
+
+
+def test_absence_of_responders_stays_low():
+    """'no emergency vehicles' must not be read as responders being present."""
+    p = VSSPerceptionPipeline()
+    raw = json.dumps({
+        "raw_summary": "Traffic flows normally. There are no emergency vehicles or police present.",
+        "location": "Highway", "camera_id": "x",
+        "vehicles_involved": 0, "hazard_indicators": [],
+        "crisis_type": "Normal traffic flow", "severity": "LOW", "confidence": 0.95,
+    })
+    assert p.parse_vlm_json_output(raw).severity == "LOW"
