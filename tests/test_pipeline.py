@@ -1,6 +1,6 @@
 import os
 from src.orchestrator.incident_manager import IncidentOrchestrator
-from src.perception.vss_pipeline import VisualContextSummary
+from src.perception.vss_pipeline import VisualContextSummary, StreamFrameEvent
 
 def test_full_incident_orchestration_with_summary():
     orchestrator = IncidentOrchestrator()
@@ -64,6 +64,55 @@ def test_incident_orchestration_with_mock_video():
         assert incident["incident_id"].startswith("CAD-EMG-")
     except Exception as e:
         print(f"Skipping VLM mock video test, NIM not reachable: {e}")
+
+def _stream_event(status, severity):
+    return StreamFrameEvent(
+        timestamp="00:00:01",
+        elapsed_seconds=1.0,
+        status=status,
+        severity=severity,
+        scene_description=f"synthetic {status}",
+        visual_summary=VisualContextSummary(
+            location="Test Highway",
+            camera_id="CAM-TEST",
+            crisis_type=f"synthetic {status}",
+            severity=severity,
+            vehicles_involved=0 if severity == "LOW" else 2,
+        ),
+    )
+
+def test_all_clear_never_reaches_the_dispatch_chain(monkeypatch):
+    """An all-clear is the pipeline concluding nothing is happening.
+
+    Running the dispatch chain on it produced ERG lookups, perimeter locks and CODE RED
+    briefs for quiet roads, hidden behind a green terminal banner while the dashboard
+    rendered them in full. Needs no video and no VLM, so it guards the gate cheaply.
+    """
+    orchestrator = IncidentOrchestrator()
+    events = [
+        _stream_event("ROUTINE_ALL_CLEAR", "LOW"),
+        _stream_event("ROADSIDE_ASSISTANCE", "MEDIUM"),
+        _stream_event("CRISIS_IMPACT", "CRITICAL"),
+    ]
+    monkeypatch.setattr(orchestrator.perception, "stream_video_feed", lambda *a, **kw: iter(events))
+
+    dispatched_severities = []
+    real_process_incident = orchestrator.process_incident
+
+    def spy(video_input, *args, **kwargs):
+        dispatched_severities.append(video_input.severity)
+        return real_process_incident(video_input, *args, **kwargs)
+
+    monkeypatch.setattr(orchestrator, "process_incident", spy)
+
+    results = {r["status"]: r for r in orchestrator.stream_incident("data/video_clips/aic21_80.mp4")}
+
+    assert results["ROUTINE_ALL_CLEAR"]["incident_record"] is None
+    assert results["ROADSIDE_ASSISTANCE"]["incident_record"] is not None
+    assert results["CRISIS_IMPACT"]["incident_record"] is not None
+    assert dispatched_severities == ["MEDIUM", "CRITICAL"], (
+        "the all-clear must not invoke the hazmat/traffic/comms chain at all"
+    )
 
 if __name__ == "__main__":
     test_full_incident_orchestration_with_summary()
