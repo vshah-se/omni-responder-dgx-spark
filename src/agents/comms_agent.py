@@ -9,24 +9,37 @@ class CommsAgent:
         hazmat_status = hazmat_data.get("status", "NO_HAZARDS_DETECTED")
         crisis_type = perception_data.get("crisis_type", "Normal Traffic Flow")
 
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")
+        timestamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         cad_incident_id = f"CAD-EMG-{datetime.datetime.now().strftime('%H%M%S')}"
 
         is_roadside = any(term in crisis_type.lower() for term in ["roadside", "shoulder", "towing", "disabled"])
 
-        # Tier 1: Real Critical Collisions or Confirmed Toxic Spills
-        if (severity in ["CRITICAL", "SEVERE"] or (hazmat_status == "IDENTIFIED" and hazmat_data.get("isolation_radius_meters", 0) > 0)) and not is_roadside:
+        vehicles = int(perception_data.get("vehicles_involved", 0))
+        has_confirmed_hazmat = hazmat_status == "IDENTIFIED" and hazmat_data.get("isolation_radius_meters", 0) > 0
+
+        # Tier 1: Confirmed collision/spill with physical evidence — CODE RED
+        # CRITICAL/SEVERE is always Tier 1. HIGH only escalates if there are
+        # actual vehicles involved or a confirmed hazmat material to point at:
+        # a bare "HIGH" from the VLM without corroborating evidence must not
+        # auto-dispatch heavy rescue and paramedics.
+        is_tier1 = (
+            severity in ["CRITICAL", "SEVERE"]
+            or (severity == "HIGH" and (vehicles > 0 or has_confirmed_hazmat))
+            or (has_confirmed_hazmat and not is_roadside)
+        )
+
+        if is_tier1 and not is_roadside:
             priority = "CRITICAL - CODE RED"
             units = ["Hazmat Response Unit 7", "Fire Battalion Engine 12", "Heavy Rescue Squad 3", "EMS Paramedic Unit 9", "Metro Traffic Police Unit 22"]
             status_desc = "EMERGENCY UNITS DISPATCHED (CODE RED)"
 
-        # Tier 2: Roadside Assistance / Shoulder Breakdown / Weather Caution (Code Amber)
+        # Tier 2: Roadside assistance / minor congestion / bare HIGH with no evidence — CODE AMBER
         elif is_roadside or severity in ["HIGH", "MEDIUM", "MODERATE"]:
             priority = "HIGH - CODE AMBER"
             units = ["Highway Safety Patrol Unit 4", "Roadway Tow & Recovery Squad"]
             status_desc = "ROADSIDE SAFETY & TOW SUPPORT ACTIVE (CODE AMBER)"
 
-        # Tier 3: All Clear / Normal Flow
+        # Tier 3: All clear / normal flow
         else:
             priority = "ROUTINE - CODE GREEN"
             units = ["None Required (Autonomous Edge Monitoring Active)"]

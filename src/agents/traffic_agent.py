@@ -5,6 +5,7 @@ class TrafficAgent:
 
     def __init__(self):
         self.active_closures = []
+        self._MAX_CLOSURE_HISTORY = 20  # prevent unbounded growth across a long session
 
     def dispatch_reroute(self, location: str, isolation_radius_meters: int, severity: str = "LOW") -> Dict[str, Any]:
         severity_upper = severity.upper()
@@ -58,6 +59,9 @@ class TrafficAgent:
             "actions": actions
         }
         self.active_closures.append(closure_record)
+        # Trim the tail so the list never grows beyond MAX_CLOSURE_HISTORY entries
+        if len(self.active_closures) > self._MAX_CLOSURE_HISTORY:
+            self.active_closures = self.active_closures[-self._MAX_CLOSURE_HISTORY:]
 
         return {
             "status": "EMERGENCY_PERIMETER_LOCKED" if has_isolation_zone else "EMERGENCY_LANE_CLOSURE",
