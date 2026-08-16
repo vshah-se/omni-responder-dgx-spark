@@ -66,13 +66,22 @@ async def index():
 
 @app.get("/clip-manifest")
 async def clip_manifest():
-    """Which videos are actually available, best candidate first. The page probes
-    this instead of hardcoding a filename that may not exist."""
+    """Which videos are actually available, smallest first. The page probes
+    this instead of hardcoding a filename that may not exist.
+    All extensions in VIDEO_EXT are included, not just .mp4."""
     out = []
+    seen = set()
     for url, d in (("/clips", HERE / "clips"), ("/video", REPO / "data" / "video_clips")):
         if not d.is_dir():
             continue
-        for f in sorted(d.glob("*.mp4"), key=lambda x: x.stat().st_size):
+        files = sorted(
+            (p for ext in VIDEO_EXT for p in d.glob(f"*{ext}")),
+            key=lambda x: x.stat().st_size
+        )
+        for f in files:
+            if f.name in seen:
+                continue
+            seen.add(f.name)
             out.append({"url": f"{url}/{f.name}",
                         "name": f.name,
                         "mb": round(f.stat().st_size / 1e6, 1)})
