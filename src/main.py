@@ -104,6 +104,7 @@ def print_rich_incident_report(record: Dict[str, Any]):
         tg_status = tg.get("status", "DISABLED")
         if tg_status == "SENT":
             console.print(f"📨 [bold green]Telegram Dispatch: SENT[/bold green] (simulated resource callout, message_id={tg.get('message_id')})")
+            console.print(f"   [dim]{tg.get('tag', '')}[/dim]")
         elif tg_status == "DISABLED":
             console.print(f"📨 [dim]Telegram Dispatch: disabled ({tg.get('detail')})[/dim]")
         else:

@@ -19,13 +19,14 @@ class IncidentOrchestrator:
         self.comms_agent = CommsAgent()
         self.telegram = TelegramNotifier()
 
-    def process_incident(self, video_input: Union[str, VisualContextSummary], location_hint: Optional[str] = None) -> Dict[str, Any]:
+    def process_incident(self, video_input: Union[str, VisualContextSummary], location_hint: Optional[str] = None, source_video: Optional[str] = None) -> Dict[str, Any]:
         """Main end-to-end incident dispatch loop."""
         # 1. Perception Phase (NVIDIA VSS / Cosmos Reasoner VLM)
         if isinstance(video_input, VisualContextSummary):
             visual_summary = video_input
         else:
             visual_summary = self.perception.process_video_file(video_input, location_hint=location_hint)
+            source_video = source_video or os.path.basename(video_input)
 
         effective_location = visual_summary.location
 
@@ -53,6 +54,7 @@ class IncidentOrchestrator:
         record = {
             "incident_id": dispatch_report["cad_id"],
             "timestamp": dispatch_report["timestamp"],
+            "source_video": source_video,
             "platform": {
                 "hardware": settings.target_hardware,
                 "orchestrator_model": settings.orchestrator_llm,
@@ -78,7 +80,11 @@ class IncidentOrchestrator:
         """Streams real-time edge monitoring with live wall-clock timestamps and real video duration."""
         for event in self.perception.stream_video_feed(video_path, location_hint=location_hint, speed_multiplier=speed_multiplier):
             if event.status in ["CRISIS_IMPACT", "ROADSIDE_ASSISTANCE", "ROUTINE_ALL_CLEAR"] and event.visual_summary:
-                full_dispatch = self.process_incident(event.visual_summary, location_hint=location_hint)
+                full_dispatch = self.process_incident(
+                    event.visual_summary,
+                    location_hint=location_hint,
+                    source_video=os.path.basename(video_path)
+                )
                 yield {
                     "event_type": "DISPATCH_SUMMARY_TRIGGERED",
                     "timestamp": event.timestamp,

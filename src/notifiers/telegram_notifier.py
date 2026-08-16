@@ -1,11 +1,25 @@
+import datetime
 import json
 import os
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from typing import Dict, Any, Optional
+from zoneinfo import ZoneInfo
 
 TELEGRAM_ENV_FILE = "config/telegram.env"
+DISPLAY_TZ = ZoneInfo("America/Los_Angeles")
+
+
+def _dispatch_tag(record: Dict[str, Any]) -> str:
+    """One-line fingerprint so repeated demo runs are distinguishable at a glance:
+    short unique id, wall-clock PDT time (correct even on a UTC-clocked Spark),
+    and the source video that produced the incident."""
+    short_id = uuid.uuid4().hex[:6]
+    stamp = datetime.datetime.now(DISPLAY_TZ).strftime("%b %d %I:%M:%S %p %Z")
+    video = record.get("source_video") or "unknown-source"
+    return f"#{short_id} · {stamp} · {video}"
 
 
 def _load_env_file(path: str = TELEGRAM_ENV_FILE) -> Dict[str, str]:
@@ -54,9 +68,12 @@ class TelegramNotifier:
         location = perception.get("location", "Unknown")
         camera = perception.get("camera_id", "N/A")
 
+        tag = _dispatch_tag(record)
+
         if "GREEN" in code:
             return (
                 f"🟢 ALL CLEAR — {location} ({camera})\n"
+                f"{tag}\n"
                 f"Routine monitoring. No emergency dispatch required.\n"
                 f"Generated on-device — NVIDIA DGX Spark. No raw video egress."
             )
@@ -67,6 +84,7 @@ class TelegramNotifier:
 
         lines = [
             f"{icon} CAD DISPATCH BRIEF — {code}",
+            tag,
             "",
             f"Incident ID: {dispatch.get('cad_id', 'N/A')}",
             f"Location: {location}",
@@ -102,6 +120,8 @@ class TelegramNotifier:
             }
 
         text = self.format_message(record)
+        # First line of the tag block is what the phone shows; echo it to the terminal
+        tag_line = next((l for l in text.splitlines() if l.startswith("#") or " · " in l), "")
         payload = urllib.parse.urlencode({"chat_id": self.chat_id, "text": text}).encode("utf-8")
         url = f"{self.API_BASE}/bot{self.bot_token}/sendMessage"
 
@@ -114,6 +134,7 @@ class TelegramNotifier:
                     "status": "SENT",
                     "chat_id": self.chat_id,
                     "message_id": data.get("result", {}).get("message_id"),
+                    "tag": tag_line,
                 }
             return {"status": "ERROR", "detail": str(data.get("description", "unknown"))[:200]}
         except urllib.error.HTTPError as e:

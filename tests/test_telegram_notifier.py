@@ -59,5 +59,30 @@ class TestTelegramNotifier(unittest.TestCase):
         self.assertLess(len(text.splitlines()), 5)
 
 
+class TestDispatchTag(unittest.TestCase):
+    """The tag line is what makes repeated demo runs distinguishable on a phone."""
+
+    def setUp(self):
+        self.notifier = TelegramNotifier(bot_token="", chat_id="")
+
+    def test_tag_present_on_every_tier(self):
+        for code in ("CRITICAL - CODE RED", "HIGH - CODE AMBER", "ROUTINE - CODE GREEN"):
+            rec = _record(code)
+            rec["source_video"] = "aic21_80.mp4"
+            text = self.notifier.format_message(rec)
+            self.assertIn("aic21_80.mp4", text, f"missing video name for {code}")
+            self.assertIn(" · ", text, f"missing tag separator for {code}")
+
+    def test_tag_id_is_unique_per_message(self):
+        rec = _record("CRITICAL - CODE RED")
+        first = self.notifier.format_message(rec).splitlines()[1]
+        second = self.notifier.format_message(rec).splitlines()[1]
+        self.assertNotEqual(first, second)
+
+    def test_tag_survives_missing_source_video(self):
+        text = self.notifier.format_message(_record("HIGH - CODE AMBER"))
+        self.assertIn("unknown-source", text)
+
+
 if __name__ == "__main__":
     unittest.main()
